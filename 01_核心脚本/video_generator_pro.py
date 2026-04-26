@@ -1837,13 +1837,14 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'mode': mode,
         'resolution': resolution,
         'fps': fps,
+        'subtitle': True,
         'subtitle_style': subtitle_style,
+        'subtitle_animation': 'none',
         'transition': transition,
         'voice': voice,
         'transition_duration': 0.5,
         'rate': '+0%',
         'scene_fade': 0.0,
-        'subtitle_animation': 'none',
         'bgm_volume': 0.3,
         'watermark': None,
         'watermark_position': 'bottom-right',
@@ -1887,7 +1888,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
 | `transition` | `{transition}` | 转场效果 |
 | `transition_duration` | `0.5` | 转场时长(秒) |
 | `scene_fade` | `0.0` | 场景淡入淡出(秒)，建议0.2-0.5 |
-| `subtitle` | `false` | 是否启用字幕 |
+| `subtitle` | `true` | 是否启用字幕 |
 | `subtitle_style` | `{subtitle_style}` | 字幕样式 |
 | `subtitle_animation` | `none` | 字幕动画: none / slide_up / fade_in |
 | `watermark` | `null` | 水印图片路径(相对或绝对) |
