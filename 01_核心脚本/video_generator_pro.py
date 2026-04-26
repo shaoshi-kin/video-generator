@@ -1209,7 +1209,7 @@ def add_watermark(
     watermark: Path,
     position: str,
     output: Path,
-    opacity: float = 0.5
+    opacity: float = 0.75
 ) -> bool:
     """添加水印/Logo"""
 
