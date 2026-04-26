@@ -1893,8 +1893,11 @@ AI配音音色 (--voice):
     --intro intro.mp4 --outro outro.mp4 \\
     --bgm music.mp3 --bgm-volume 0.2
 
-  # 批量处理
-  python3 video_generator_pro.py --batch projects/*
+  # 批量处理（自动发现当前目录项目）
+  python3 video_generator_pro.py --batch
+
+  # 队列处理（指定多个项目，失败自动继续）
+  python3 video_generator_pro.py --queue projects/A projects/B projects/C
         """
     )
 
@@ -1937,6 +1940,8 @@ AI配音音色 (--voice):
                        help='预览模式：只生成第一个场景，快速验证效果')
     parser.add_argument('--regenerate-audio', action='store_true',
                        help='强制重新生成音频（保留已有场景）')
+    parser.add_argument('--queue', nargs='+', metavar='PATH',
+                       help='队列模式：顺序处理多个项目，失败自动继续下一个')
 
     args = parser.parse_args()
 
@@ -1956,27 +1961,77 @@ AI配音音色 (--voice):
                 check_project_materials(project_dir)
         sys.exit(0)
 
-    if args.batch:
-        # 批量处理
-        projects = [p for p in Path('.').iterdir() if p.is_dir() and ((p / '03_videos').exists() or (p / '03_audio').exists())]
+    # 批量处理 / 队列处理
+    if args.batch or args.queue:
+        if args.queue:
+            # 队列模式：从命令行获取指定项目列表
+            queue_paths = [Path(p) for p in args.queue]
+            projects = []
+            for p in queue_paths:
+                if p.exists() and p.is_dir():
+                    projects.append(p)
+                else:
+                    print(f"⚠️  跳过不存在的项目: {p}")
+        else:
+            # 批量模式：自动发现当前目录下的项目
+            projects = [p for p in Path('.').iterdir() if p.is_dir() and ((p / '03_videos').exists() or (p / '03_audio').exists())]
 
         if not projects:
             print("❌ 未找到项目文件夹")
             sys.exit(1)
 
-        print(f"🔄 批量处理 {len(projects)} 个项目...")
-
-        results = []
-        for project in sorted(projects):
-            result = process_project(project, args)
-            results.append((project.name, result))
-
+        mode_label = "队列" if args.queue else "批量"
         print(f"\n{'='*60}")
-        print("📊 批量处理完成")
+        print(f"🔄 {mode_label}处理 {len(projects)} 个项目...")
         print(f"{'='*60}")
-        for name, result in results:
-            status = "✅" if result else "❌"
-            print(f"{status} {name}")
+
+        queue_start = time.time()
+        results = []
+        success_count = 0
+        fail_count = 0
+        skip_count = 0
+
+        for i, project in enumerate(projects, 1):
+            print(f"\n📌 [{i}/{len(projects)}] 项目: {project.name}")
+            print(f"{'─'*60}")
+
+            # 加载项目配置
+            merge_project_config(args, project)
+
+            try:
+                result = process_project(project, args)
+                if result:
+                    results.append((project.name, True, str(result)))
+                    success_count += 1
+                else:
+                    results.append((project.name, False, None))
+                    fail_count += 1
+            except KeyboardInterrupt:
+                print(f"\n⛔ 用户中断，终止{mode_label}处理")
+                sys.exit(1)
+            except Exception as e:
+                print(f"\n❌ 项目异常: {e}")
+                results.append((project.name, False, None))
+                fail_count += 1
+
+        queue_total = time.time() - queue_start
+
+        # 汇总报告
+        print(f"\n{'='*60}")
+        print(f"📊 {mode_label}处理完成报告")
+        print(f"{'='*60}")
+        print(f"  📁 总项目: {len(projects)} 个")
+        print(f"  ✅ 成功:   {success_count} 个")
+        print(f"  ❌ 失败:   {fail_count} 个")
+        print(f"  ⏱️  总耗时:  {queue_total:.1f}s")
+        if success_count > 0:
+            print(f"  ⏱️  平均耗时: {queue_total / success_count:.1f}s/项目")
+        print(f"\n  📋 项目明细:")
+        for name, ok, path in results:
+            status = "✅" if ok else "❌"
+            detail = f" → {path}" if ok else ""
+            print(f"    {status} {name}{detail}")
+        print(f"{'='*60}")
 
     elif args.project:
         # 单个项目
