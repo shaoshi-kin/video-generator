@@ -92,10 +92,10 @@ SUBTITLE_STYLES = {
 }
 
 
-# 转场效果预设（全部基于 ffmpeg xfade 滤镜）
+# 转场效果预设（基于 ffmpeg xfade 滤镜，需 ffmpeg 4.3+）
 TRANSITIONS = {
     'fade': 'fade',
-    'dissolve': 'fade',
+    'dissolve': 'dissolve',
     'wipeleft': 'wipeleft',
     'wiperight': 'wiperight',
     'wipeup': 'wipeup',
@@ -104,10 +104,6 @@ TRANSITIONS = {
     'slideright': 'slideright',
     'slideup': 'slideup',
     'slidedown': 'slidedown',
-    'squeezeh': 'squeezeh',
-    'squeezev': 'squeezev',
-    'zoomin': 'zoomin',
-    'zoomout': 'zoomout',
     'smoothleft': 'smoothleft',
     'smoothright': 'smoothright',
     'smoothup': 'smoothup',
@@ -128,22 +124,11 @@ TRANSITIONS = {
     'hrslice': 'hrslice',
     'vuslice': 'vuslice',
     'vdslice': 'vdslice',
-    'hblur': 'hblur',
-    'fadegrays': 'fadegrays',
     'pixelize': 'pixelize',
     'radial': 'radial',
-    'wipetl': 'wipetl',
-    'wipetr': 'wipetr',
-    'wipebl': 'wipebl',
-    'wipebr': 'wipebr',
-    'coverleft': 'coverleft',
-    'coverright': 'coverright',
-    'coverup': 'coverup',
-    'coverdown': 'coverdown',
-    'revealleft': 'revealleft',
-    'revealright': 'revealright',
-    'revealup': 'revealup',
-    'revealdown': 'revealdown',
+    'distance': 'distance',
+    'fadeblack': 'fadeblack',
+    'fadewhite': 'fadewhite',
     'none': None
 }
 
@@ -1385,11 +1370,9 @@ def process_project(
     else:
         # 顺序生成（预览模式也用顺序）
         for task_idx, task in enumerate(pending_tasks, 1):
-            scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview = task
+            scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation = task
             media = scene.image_path.name if scene.image_path else (scene.video_path.name if scene.video_path else '无素材')
             try:
-                scene_fade = getattr(args, 'scene_fade', 0.0)
-                subtitle_animation = getattr(args, 'subtitle_animation', 'none')
                 success = create_scene_with_effects(
                     scene, scene_output, (width, height), fps,
                     add_subtitle, subtitle_style, preview=preview,
