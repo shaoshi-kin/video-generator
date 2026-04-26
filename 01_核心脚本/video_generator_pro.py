@@ -7,7 +7,7 @@
     python3 video_generator_pro.py --project 项目路径 [选项]
 
 示例:
-    # 基础用法（自动使用 03_videos 或 03_audio + 图片）
+    # 基础用法（自动使用 04_videos 或 05_audio + 图片）
     python3 video_generator_pro.py --project projects/XXX
 
     # 带字幕 + 片头片尾 + 转场
@@ -561,7 +561,7 @@ def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = 
         success: bool - 是否成功
         segments_info: list of dict - 每段的音色和图片分配信息（图片模式）
     """
-    audio_dir = project_dir / '03_audio'
+    audio_dir = project_dir / '05_audio'
     article_dir = project_dir / '01_article'
 
     # 如果已经有音频且非强制模式，跳过
@@ -583,7 +583,7 @@ def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = 
         return False, []
 
     # 检测模式：如果有视频目录且包含视频文件，则为视频模式
-    videos_dir = project_dir / '03_videos'
+    videos_dir = project_dir / '04_videos'
     video_mode = videos_dir.exists() and any(videos_dir.iterdir())
 
     # 创建音频目录
@@ -617,7 +617,7 @@ def find_image_by_ref(project_dir: Path, image_ref: str) -> Optional[Path]:
         return None
 
     # 支持的图片目录和扩展名（包含大小写）
-    img_dirs = ['02_images', '02_manual_images', '01_api_images']
+    img_dirs = ['03_images', '03_manual_images', '01_api_images']
     exts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif',
             '.JPG', '.JPEG', '.PNG', '.WEBP', '.HEIC', '.GIF']
 
@@ -659,7 +659,7 @@ def find_image_by_ref(project_dir: Path, image_ref: str) -> Optional[Path]:
 def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene]:
     """
     自动发现项目中的所有场景
-    优先级：03_videos > 03_audio + 图片
+    优先级：04_videos > 05_audio + 图片
 
     Args:
         image_assignments: 可选，每段音频对应的图片分配信息
@@ -667,8 +667,8 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
     """
     scenes = []
 
-    # 先查找 03_videos 目录
-    videos_dir = project_dir / '03_videos'
+    # 先查找 04_videos 目录
+    videos_dir = project_dir / '04_videos'
     if videos_dir.exists():
         video_files = sorted([f for f in videos_dir.iterdir()
                             if f.suffix.lower() in ['.mp4', '.mov', '.avi', '.mkv']])
@@ -676,7 +676,7 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
         for i, video_file in enumerate(video_files, 1):
             duration = get_media_duration(str(video_file))
             # 尝试找对应的音频
-            audio_path = project_dir / '03_audio' / f"scene_{i:02d}.mp3"
+            audio_path = project_dir / '05_audio' / f"scene_{i:02d}.mp3"
             if not audio_path.exists():
                 audio_path = None
 
@@ -691,7 +691,7 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
 
     # 如果没有视频，查找音频+图片
     if not scenes:
-        audio_dir = project_dir / '03_audio'
+        audio_dir = project_dir / '05_audio'
         if audio_dir.exists():
             audio_files = sorted([f for f in audio_dir.iterdir()
                                 if f.suffix == '.mp3'])
@@ -715,7 +715,7 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
                 if not image_path:
                     exts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif',
                             '.JPG', '.JPEG', '.PNG', '.WEBP', '.HEIC', '.GIF']
-                    for img_dir in ['02_images', '02_manual_images', '01_api_images']:
+                    for img_dir in ['03_images', '03_manual_images', '01_api_images']:
                         img_dir_path = project_dir / img_dir
                         if img_dir_path.exists():
                             # 1. 尝试标准命名 scene_XX.ext
@@ -1129,11 +1129,11 @@ def process_project(
     print(f"{'='*60}")
 
     # 检查输出目录
-    final_dir = project_dir / '05_final'
+    final_dir = project_dir / '07_final'
     final_dir.mkdir(exist_ok=True)
 
     # 创建场景片段目录（保存中间产物，支持断点续传）
-    scenes_dir = project_dir / '04_scenes'
+    scenes_dir = project_dir / '06_scenes'
     scenes_dir.mkdir(exist_ok=True)
 
     if preview_mode:
@@ -1385,8 +1385,8 @@ def process_project(
             # 显式指定 BGM 路径
             bgm_path = Path(args.bgm)
         else:
-            # 自动查找项目 06_bgm/ 目录下的音乐文件
-            bgm_dir = project_dir / '06_bgm'
+            # 自动查找项目 02_bgm/ 目录下的音乐文件
+            bgm_dir = project_dir / '02_bgm'
             if bgm_dir.exists():
                 music_exts = ['.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg']
                 music_files = sorted([f for f in bgm_dir.iterdir() if f.suffix.lower() in music_exts])
@@ -1584,10 +1584,10 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
     print(f"\n📂 创建目录结构...")
     dirs = ['01_article']
     if mode in ('image', 'hybrid'):
-        dirs.append('02_images')
+        dirs.append('03_images')
     if mode in ('video', 'hybrid'):
-        dirs.append('03_videos')
-    dirs.extend(['04_scenes', '05_final', '06_bgm'])
+        dirs.append('04_videos')
+    dirs.extend(['06_scenes', '07_final', '02_bgm'])
 
     for d in dirs:
         (project_dir / d).mkdir(exist_ok=True)
@@ -1662,13 +1662,13 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
     print(f"📁 项目路径: {project_dir}")
     print(f"\n📋 后续步骤:")
     if mode in ('image', 'hybrid'):
-        print(f"  1. 放入图片到: {project_dir}/02_images/")
+        print(f"  1. 放入图片到: {project_dir}/03_images/")
         print(f"     命名: 01.jpg, 02.jpg, ... 或 吃饭.jpg, 睡觉.png, ...")
     if mode in ('video', 'hybrid'):
-        print(f"  1. 放入视频到: {project_dir}/03_videos/")
+        print(f"  1. 放入视频到: {project_dir}/04_videos/")
         print(f"     命名: scene_01.mp4, scene_02.mp4, ...")
     print(f"  2. 编辑文章: {project_dir}/01_article/文章.md")
-    print(f"  3. (可选) 放入 BGM 到: {project_dir}/06_bgm/")
+    print(f"  3. (可选) 放入 BGM 到: {project_dir}/02_bgm/")
     print(f"     支持: .mp3 .wav .aac .m4a，自动循环播放")
     print(f"  4. 生成视频:")
     print(f"     python3 video_generator_pro.py -p {project_dir} --voice {voice}")
@@ -1761,7 +1761,7 @@ def check_project_materials(project_dir: Path, image_assignments: list = None) -
         print(f"  ⚠️  未找到文章文件")
 
     # 2. 检查音频
-    audio_dir = project_dir / '03_audio'
+    audio_dir = project_dir / '05_audio'
     audio_files = sorted([f for f in audio_dir.iterdir() if f.suffix == '.mp3']) if audio_dir.exists() else []
     result['stats']['audio_files'] = len(audio_files)
     if audio_files:
@@ -1777,8 +1777,8 @@ def check_project_materials(project_dir: Path, image_assignments: list = None) -
             result['valid'] = False
 
     # 3. 检查图片/视频素材
-    images_dir = project_dir / '02_images'
-    videos_dir = project_dir / '03_videos'
+    images_dir = project_dir / '03_images'
+    videos_dir = project_dir / '04_videos'
 
     images = []
     videos = []
@@ -1804,14 +1804,14 @@ def check_project_materials(project_dir: Path, image_assignments: list = None) -
             print(f"     - {img.name}")
 
     # 4. 检查场景片段
-    scenes_dir = project_dir / '04_scenes'
+    scenes_dir = project_dir / '06_scenes'
     existing_scenes = sorted([f for f in scenes_dir.iterdir() if f.suffix == '.mp4']) if scenes_dir.exists() else []
     result['stats']['existing_scenes'] = len(existing_scenes)
     if existing_scenes:
         print(f"  ✅ 场景片段: {len(existing_scenes)} 个 (将跳过生成)")
 
     # 5. 检查 BGM
-    bgm_dir = project_dir / '06_bgm'
+    bgm_dir = project_dir / '02_bgm'
     bgm_files = []
     if bgm_dir.exists():
         music_exts = ['.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg']
@@ -1876,9 +1876,9 @@ def main():
         epilog="""
 项目文件夹结构:
   01_article/  - 文章文件 (.md 或 .txt)，自动生成音频
-  02_images/   - 图片素材 (.jpg/.png)，配合音频生成视频
-  03_videos/   - 视频素材 (.mp4/.mov)，配合音频替换原声
-  03_audio/    - 音频文件 (.mp3)，手动放置或自动生成
+  03_images/   - 图片素材 (.jpg/.png)，配合音频生成视频
+  04_videos/   - 视频素材 (.mp4/.mov)，配合音频替换原声
+  05_audio/    - 音频文件 (.mp3)，手动放置或自动生成
   04_final/    - 最终输出视频
 
 字幕样式 (--subtitle-style):
@@ -2001,7 +2001,7 @@ AI配音音色 (--voice):
                     print(f"⚠️  跳过不存在的项目: {p}")
         else:
             # 批量模式：自动发现当前目录下的项目
-            projects = [p for p in Path('.').iterdir() if p.is_dir() and ((p / '03_videos').exists() or (p / '03_audio').exists())]
+            projects = [p for p in Path('.').iterdir() if p.is_dir() and ((p / '04_videos').exists() or (p / '05_audio').exists())]
 
         if not projects:
             print("❌ 未找到项目文件夹")
