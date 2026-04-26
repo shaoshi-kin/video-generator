@@ -92,20 +92,58 @@ SUBTITLE_STYLES = {
 }
 
 
-# 转场效果预设
+# 转场效果预设（全部基于 ffmpeg xfade 滤镜）
 TRANSITIONS = {
     'fade': 'fade',
-    'dissolve': 'fade',  # 同 fade
-    'wipeleft': 'wipe=left',
-    'wiperight': 'wipe=right',
-    'slideleft': 'slide=left',
-    'slideright': 'slide=right',
-    'smoothleft': 'smoothleft',
-    'smoothright': 'smoothright',
-    'circlecrop': 'circlecrop',
-    'rectcrop': 'rectcrop',
+    'dissolve': 'fade',
+    'wipeleft': 'wipeleft',
+    'wiperight': 'wiperight',
+    'wipeup': 'wipeup',
+    'wipedown': 'wipedown',
+    'slideleft': 'slideleft',
+    'slideright': 'slideright',
+    'slideup': 'slideup',
+    'slidedown': 'slidedown',
+    'squeezeh': 'squeezeh',
+    'squeezev': 'squeezev',
     'zoomin': 'zoomin',
     'zoomout': 'zoomout',
+    'smoothleft': 'smoothleft',
+    'smoothright': 'smoothright',
+    'smoothup': 'smoothup',
+    'smoothdown': 'smoothdown',
+    'circlecrop': 'circlecrop',
+    'rectcrop': 'rectcrop',
+    'circleclose': 'circleclose',
+    'circleopen': 'circleopen',
+    'horzclose': 'horzclose',
+    'horzopen': 'horzopen',
+    'vertclose': 'vertclose',
+    'vertopen': 'vertopen',
+    'diagbl': 'diagbl',
+    'diagbr': 'diagbr',
+    'diagtl': 'diagtl',
+    'diagtr': 'diagtr',
+    'hlslice': 'hlslice',
+    'hrslice': 'hrslice',
+    'vuslice': 'vuslice',
+    'vdslice': 'vdslice',
+    'hblur': 'hblur',
+    'fadegrays': 'fadegrays',
+    'pixelize': 'pixelize',
+    'radial': 'radial',
+    'wipetl': 'wipetl',
+    'wipetr': 'wipetr',
+    'wipebl': 'wipebl',
+    'wipebr': 'wipebr',
+    'coverleft': 'coverleft',
+    'coverright': 'coverright',
+    'coverup': 'coverup',
+    'coverdown': 'coverdown',
+    'revealleft': 'revealleft',
+    'revealright': 'revealright',
+    'revealup': 'revealup',
+    'revealdown': 'revealdown',
     'none': None
 }
 
@@ -241,6 +279,52 @@ def get_media_duration(path: str) -> float:
         return float(result.stdout.strip())
     except:
         return 0.0
+
+
+def build_subtitle_filter(
+    subtitle: str,
+    subtitle_style: Dict,
+    width: int,
+    height: int,
+    animation: str = 'none',
+    anim_duration: float = 0.5
+) -> str:
+    """构建字幕滤镜字符串，支持动画效果"""
+    y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
+
+    # 基础 drawtext 参数
+    base = (
+        f"drawtext=fontfile=/System/Library/Fonts/PingFang.ttc:"
+        f"text='{subtitle}':"
+        f"fontcolor={subtitle_style['color']}:"
+        f"fontsize={subtitle_style['size']}:"
+        f"borderw={subtitle_style['borderw']}:"
+        f"bordercolor={subtitle_style['bordercolor']}"
+    )
+
+    # 动画效果
+    if animation == 'slide_up':
+        start_y = height + 100
+        y_expr = f"if(lt(t\\,{anim_duration})\\,{start_y}-({start_y}-{y_pos})/{anim_duration}*t\\,{y_pos})"
+        base += f":y={y_expr}:x=(w-text_w)/2"
+    elif animation == 'fade_in':
+        alpha_expr = f"if(lt(t\\,{anim_duration})\\,t/{anim_duration}\\,1)"
+        base += f":y={y_pos}:x=(w-text_w)/2:alpha={alpha_expr}"
+    else:
+        base += f":x=(w-text_w)/2:y={y_pos}"
+
+    if subtitle_style.get('box'):
+        base += f":box=1:boxcolor={subtitle_style['boxcolor']}:boxborderw={subtitle_style['boxborderw']}"
+
+    return base
+
+
+def build_fade_filter(duration: float, fade_duration: float) -> str:
+    """构建淡入淡出滤镜"""
+    if fade_duration <= 0 or duration <= fade_duration * 2:
+        return ""
+    fade_out_start = max(0, duration - fade_duration)
+    return f",fade=t=in:st=0:d={fade_duration},fade=t=out:st={fade_out_start}:d={fade_duration}"
 
 
 # 音色映射表
@@ -772,9 +856,11 @@ def create_scene_with_effects(
     fps: int,
     add_subtitle: bool = False,
     subtitle_style: Dict = None,
-    preview: bool = False
+    preview: bool = False,
+    scene_fade: float = 0.0,
+    subtitle_animation: str = 'none'
 ) -> bool:
-    """创建单个场景视频，支持缩放效果和字幕"""
+    """创建单个场景视频，支持缩放效果、字幕、淡入淡出"""
 
     width, height = resolution
 
@@ -782,24 +868,16 @@ def create_scene_with_effects(
         # 视频素材 - 静音原视频，使用生成的配音音频
         video_input = str(scene.video_path)
 
-        # 构建视频滤镜（缩放+字幕）
+        # 构建视频滤镜（缩放+字幕+淡入淡出）
         vf_filter = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
 
         if add_subtitle and subtitle_style and scene.subtitle:
-            y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
-
-            vf_filter += (
-                f",drawtext=fontfile=/System/Library/Fonts/PingFang.ttc:"
-                f"text='{scene.subtitle}':"
-                f"fontcolor={subtitle_style['color']}:"
-                f"fontsize={subtitle_style['size']}:"
-                f"x=(w-text_w)/2:y={y_pos}:"
-                f"borderw={subtitle_style['borderw']}:"
-                f"bordercolor={subtitle_style['bordercolor']}"
+            vf_filter += "," + build_subtitle_filter(
+                scene.subtitle, subtitle_style, width, height,
+                animation=subtitle_animation
             )
 
-            if subtitle_style.get('box'):
-                vf_filter += f":box=1:boxcolor={subtitle_style['boxcolor']}:boxborderw={subtitle_style['boxborderw']}"
+        vf_filter += build_fade_filter(scene.duration, scene_fade)
 
         # 如果有生成的音频，使用生成的音频；否则保留原视频音频
         if scene.audio_path:
@@ -817,7 +895,9 @@ def create_scene_with_effects(
                     '-stream_loop', str(loop_count),
                     '-i', video_input,
                     '-i', str(scene.audio_path),
-                    '-c:v', 'copy',
+                    '-vf', vf_filter,
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+                    '-pix_fmt', 'yuv420p',
                     '-c:a', 'aac', '-b:a', '192k',
                     '-map', '0:v:0', '-map', '1:a:0',
                     '-t', str(audio_duration),
@@ -830,7 +910,9 @@ def create_scene_with_effects(
                     'ffmpeg', '-y',
                     '-i', video_input,
                     '-i', str(scene.audio_path),
-                    '-c:v', 'copy',
+                    '-vf', vf_filter,
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+                    '-pix_fmt', 'yuv420p',
                     '-c:a', 'aac', '-b:a', '192k',
                     '-map', '0:v:0', '-map', '1:a:0',
                     '-t', str(audio_duration),
@@ -841,7 +923,10 @@ def create_scene_with_effects(
             cmd = [
                 'ffmpeg', '-y',
                 '-i', video_input,
-                '-c', 'copy',
+                '-vf', vf_filter,
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'copy',
                 '-t', str(scene.duration),
                 str(output_path)
             ]
@@ -864,20 +949,13 @@ def create_scene_with_effects(
 
         # 添加字幕
         if add_subtitle and subtitle_style and scene.subtitle:
-            y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
-
-            vf_filter += (
-                f",drawtext=fontfile=/System/Library/Fonts/PingFang.ttc:"
-                f"text='{scene.subtitle}':"
-                f"fontcolor={subtitle_style['color']}:"
-                f"fontsize={subtitle_style['size']}:"
-                f"x=(w-text_w)/2:y={y_pos}:"
-                f"borderw={subtitle_style['borderw']}:"
-                f"bordercolor={subtitle_style['bordercolor']}"
+            vf_filter += "," + build_subtitle_filter(
+                scene.subtitle, subtitle_style, width, height,
+                animation=subtitle_animation
             )
 
-            if subtitle_style.get('box'):
-                vf_filter += f":box=1:boxcolor={subtitle_style['boxcolor']}:boxborderw={subtitle_style['boxborderw']}"
+        # 淡入淡出
+        vf_filter += build_fade_filter(duration, scene_fade)
 
         # 编码参数：预览模式快速编码，正式模式高质量
         if preview:
@@ -929,6 +1007,8 @@ def create_scene_with_effects(
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"   ⚠️ ffmpeg: {result.stderr[:200]}")
         return output_path.exists()
     except Exception as e:
         print(f"   ❌ 生成失败: {e}")
@@ -937,11 +1017,12 @@ def create_scene_with_effects(
 
 def _generate_scene_worker(task):
     """并行场景生成工作函数"""
-    scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview = task
+    scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation = task
     try:
         success = create_scene_with_effects(
             scene, scene_output, (width, height), fps,
-            add_subtitle, subtitle_style, preview=preview
+            add_subtitle, subtitle_style, preview=preview,
+            scene_fade=scene_fade, subtitle_animation=subtitle_animation
         )
         media_name = None
         if scene.image_path:
@@ -977,9 +1058,10 @@ def add_transition(
     video2: Path,
     output: Path,
     transition_type: str,
-    duration: float = 0.5
+    duration: float = 0.5,
+    sfx_path: Optional[Path] = None
 ) -> bool:
-    """添加转场效果"""
+    """添加转场效果，可选转场音效"""
 
     if transition_type == 'none' or not TRANSITIONS.get(transition_type):
         # 无转场，直接拼接
@@ -994,13 +1076,27 @@ def add_transition(
     transition_name = TRANSITIONS[transition_type]
     offset = dur1 - duration
 
+    # 构建命令
+    inputs = ['-i', str(video1), '-i', str(video2)]
+    audio_filter = f"[0:a][1:a]acrossfade=d={duration}[a]"
+
+    # 混入转场音效
+    if sfx_path and sfx_path.exists():
+        sfx_dur = get_media_duration(str(sfx_path))
+        use_dur = min(sfx_dur, duration * 2)
+        inputs.extend(['-i', str(sfx_path)])
+        audio_filter = (
+            f"[0:a][1:a]acrossfade=d={duration}[mix];"
+            f"[2:a]atrim=0:{use_dur},volume=0.6,adelay=0s[se];"
+            f"[mix][se]amix=inputs=2:duration=first[a]"
+        )
+
     cmd = [
         'ffmpeg', '-y',
-        '-i', str(video1),
-        '-i', str(video2),
+        *inputs,
         '-filter_complex',
         f"[0:v][1:v]xfade=transition={transition_name}:duration={duration}:offset={offset}[v];"
-        f"[0:a][1:a]acrossfade=d={duration}[a]",
+        + audio_filter,
         '-map', '[v]', '-map', '[a]',
         '-c:v', 'libx264', '-preset', 'veryslow', '-crf', '15',
         '-pix_fmt', 'yuv420p',
@@ -1109,6 +1205,50 @@ def add_bgm(video: Path, bgm: Path, output: Path, volume: float = 0.3) -> bool:
         return True
 
 
+def add_watermark(
+    video: Path,
+    watermark: Path,
+    position: str,
+    output: Path,
+    opacity: float = 0.5
+) -> bool:
+    """添加水印/Logo"""
+
+    positions = {
+        'top-left': '10:10',
+        'top-right': 'W-w-10:10',
+        'bottom-left': '10:H-h-10',
+        'bottom-right': 'W-w-10:H-h-10',
+        'center': '(W-w)/2:(H-h)/2',
+    }
+    pos = positions.get(position, 'W-w-10:H-h-10')
+
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', str(video),
+        '-i', str(watermark),
+        '-filter_complex',
+        f"[1:v]format=rgba,colorchannelmixer=aa={opacity}[wm];"
+        f"[0:v][wm]overlay={pos}:enable='between(t\,0\,99999)'[v]",
+        '-map', '[v]', '-map', '0:a',
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+        '-c:a', 'copy',
+        str(output)
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"   ⚠️ 水印添加失败: {result.stderr[:100]}")
+            shutil.copy(str(video), str(output))
+            return True
+        return output.exists()
+    except Exception as e:
+        print(f"   ⚠️ 水印添加失败: {e}")
+        shutil.copy(str(video), str(output))
+        return True
+
+
 def process_project(
     project_dir: Path,
     args
@@ -1139,7 +1279,12 @@ def process_project(
     if preview_mode:
         output_path = final_dir / 'preview.mp4'
     else:
-        output_path = final_dir / (args.output or 'final_video_pro.mp4')
+        if args.output:
+            output_name = args.output
+        else:
+            now = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_name = f"{project_dir.name}_{now}.mp4"
+        output_path = final_dir / output_name
 
     # 自动从文章生成音频（如果没有音频但有文章）
     # 返回音频分段信息，包含音色和图片分配
@@ -1216,7 +1361,9 @@ def process_project(
         if scene.audio_path:
             print(f"   🎵 音频: {scene.audio_path.name}")
 
-        pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode))
+        scene_fade = getattr(args, 'scene_fade', 0.0)
+        subtitle_animation = getattr(args, 'subtitle_animation', 'none')
+        pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode, scene_fade, subtitle_animation))
 
     # 执行生成（支持并行）
     total_pending = len(pending_tasks)
@@ -1241,9 +1388,12 @@ def process_project(
             scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview = task
             media = scene.image_path.name if scene.image_path else (scene.video_path.name if scene.video_path else '无素材')
             try:
+                scene_fade = getattr(args, 'scene_fade', 0.0)
+                subtitle_animation = getattr(args, 'subtitle_animation', 'none')
                 success = create_scene_with_effects(
                     scene, scene_output, (width, height), fps,
-                    add_subtitle, subtitle_style, preview=preview
+                    add_subtitle, subtitle_style, preview=preview,
+                    scene_fade=scene_fade, subtitle_animation=subtitle_animation
                 )
                 if success and scene_output.exists():
                     scene_videos.append(scene_output)
@@ -1287,6 +1437,17 @@ def process_project(
         print(f"📂 场景片段: {scenes_dir}")
 
         return output_path
+
+    # 查找转场音效
+    sfx_path = None
+    if getattr(args, 'sfx', False):
+        sfx_dir = project_dir / '02_sfx'
+        if sfx_dir.exists():
+            sfx_exts = ['.mp3', '.wav', '.aac', '.m4a', '.ogg']
+            sfx_files = sorted([f for f in sfx_dir.iterdir() if f.suffix.lower() in sfx_exts])
+            if sfx_files:
+                sfx_path = sfx_files[0]
+                print(f"🔊 自动发现转场音效: {sfx_path.name}")
 
     # 合并场景（带转场）
     print(f"\n🎞️  合并场景（转场: {args.transition}）...")
@@ -1340,7 +1501,7 @@ def process_project(
                 print(f"   🔄 [{i+1}/{len(scene_videos)}] 合并: {from_name} → {to_name}")
 
                 prev_video = main_video
-                success = add_transition(prev_video, next_video, partial_file, args.transition, args.transition_duration)
+                success = add_transition(prev_video, next_video, partial_file, args.transition, args.transition_duration, sfx_path)
 
                 if success:
                     # 保存合并状态
@@ -1400,6 +1561,17 @@ def process_project(
             if add_bgm(main_video, bgm_path, with_bgm, args.bgm_volume):
                 main_video = with_bgm
                 print("✅ BGM添加完成")
+
+        # 添加水印
+        watermark_path = getattr(args, 'watermark', None)
+        if watermark_path:
+            watermark_path = Path(watermark_path)
+        if watermark_path and watermark_path.exists():
+            print(f"🏷️ 添加水印 ({getattr(args, 'watermark_position', 'bottom-right')})...")
+            watermarked = temp_dir / 'watermarked.mp4'
+            if add_watermark(main_video, watermark_path, getattr(args, 'watermark_position', 'bottom-right'), watermarked):
+                main_video = watermarked
+                print("✅ 水印添加完成")
 
         # 复制到输出位置
         shutil.copy(str(main_video), str(output_path))
@@ -1587,7 +1759,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         dirs.append('03_images')
     if mode in ('video', 'hybrid'):
         dirs.append('04_videos')
-    dirs.extend(['06_scenes', '07_final', '02_bgm'])
+    dirs.extend(['06_scenes', '07_final', '02_bgm', '02_sfx'])
 
     for d in dirs:
         (project_dir / d).mkdir(exist_ok=True)
@@ -1649,6 +1821,8 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'voice': voice,
         'transition_duration': 0.5,
         'rate': '+0%',
+        'scene_fade': 0.0,
+        'subtitle_animation': 'none',
         'created': str(datetime.datetime.now())
     }
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -1670,7 +1844,9 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
     print(f"  2. 编辑文章: {project_dir}/01_article/文章.md")
     print(f"  3. (可选) 放入 BGM 到: {project_dir}/02_bgm/")
     print(f"     支持: .mp3 .wav .aac .m4a，自动循环播放")
-    print(f"  4. 生成视频:")
+    print(f"  4. (可选) 放入转场音效到: {project_dir}/02_sfx/")
+    print(f"     支持: .mp3 .wav，自动在转场时混入")
+    print(f"  5. 生成视频:")
     print(f"     python3 video_generator_pro.py -p {project_dir} --voice {voice}")
 
     if mode in ('image', 'hybrid'):
@@ -1711,7 +1887,8 @@ def merge_project_config(args, project_dir: Path):
     # 支持的配置键映射（配置文件键名 -> args 属性名）
     config_keys = [
         'voice', 'resolution', 'fps', 'subtitle_style', 'transition',
-        'transition_duration', 'rate', 'bgm_volume', 'subtitle', 'output'
+        'transition_duration', 'rate', 'bgm_volume', 'subtitle', 'output',
+        'scene_fade', 'watermark', 'watermark_position', 'sfx', 'subtitle_animation'
     ]
 
     applied = []
@@ -1969,6 +2146,17 @@ AI配音音色 (--voice):
                        help='强制重新生成音频（保留已有场景）')
     parser.add_argument('--queue', nargs='+', metavar='PATH',
                        help='队列模式：顺序处理多个项目，失败自动继续下一个')
+    parser.add_argument('--scene-fade', type=float, default=0.0,
+                       help='场景淡入淡出时长 (秒, 默认: 0.0, 建议 0.3-0.5)')
+    parser.add_argument('--watermark', help='水印图片路径')
+    parser.add_argument('--watermark-position', default='bottom-right',
+                       choices=['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'],
+                       help='水印位置 (默认: bottom-right)')
+    parser.add_argument('--sfx', action='store_true',
+                       help='启用转场音效 (自动查找项目 02_sfx/ 目录)')
+    parser.add_argument('--subtitle-animation', default='none',
+                       choices=['none', 'slide_up', 'fade_in'],
+                       help='字幕动画效果 (默认: none)')
 
     args = parser.parse_args()
 
