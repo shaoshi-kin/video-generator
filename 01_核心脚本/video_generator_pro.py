@@ -55,7 +55,7 @@ SUBTITLE_STYLES = {
         'borderw': 2,
         'bordercolor': 'black',
         'position': 'bottom',
-        'y_offset': 80
+        'y_offset': 150
     },
     'youtube': {
         'font': 'Arial-Bold',
@@ -65,7 +65,7 @@ SUBTITLE_STYLES = {
         'borderw': 3,
         'bordercolor': 'black',
         'position': 'bottom',
-        'y_offset': 60
+        'y_offset': 120
     },
     'minimal': {
         'font': 'SourceHanSansSC-Regular',
@@ -279,7 +279,7 @@ def build_subtitle_filter(
 
     # 基础 drawtext 参数
     base = (
-        f"drawtext=fontfile=/System/Library/Fonts/PingFang.ttc:"
+        f"drawtext=fontfile=/System/Library/Fonts/STHeiti\\ Medium.ttc:"
         f"text='{subtitle}':"
         f"fontcolor={subtitle_style['color']}:"
         f"fontsize={subtitle_style['size']}:"
@@ -423,6 +423,10 @@ def parse_article_segments(text: str, default_voice: str = 'Xiaoxiao') -> tuple:
             current_voice = default_voice
             continue
 
+        # 跳过 Markdown 标题行
+        if line.startswith('#'):
+            continue
+
         # 检查是否是图片标记行 @图:xx / @图片:xx / @img:xx
         img_match = re.match(r'@(图|图片|img)[:：]\s*(\S+)(.*)', line, re.IGNORECASE)
         if img_match:
@@ -562,7 +566,7 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
                 communicate = edge_tts.Communicate(content, voice=voice_id, rate=rate)
                 await communicate.save(str(output_path))
                 print(f"   ✅ 音频生成完成: {output_path.name} ({len(content)} 字, {voice_key})")
-                segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'index': 1})
+                segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'text': content, 'index': 1})
             else:
                 # 多音色，分别生成后合并
                 temp_files = []
@@ -572,7 +576,7 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
                     communicate = edge_tts.Communicate(content, voice=voice_id, rate=rate)
                     await communicate.save(str(temp_path))
                     temp_files.append(temp_path)
-                    segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'index': i})
+                    segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'text': content, 'index': i})
                     print(f"      ✓ 段落 {i}: {voice_key} - {content[:25]}...")
 
                 # 合并音频
@@ -749,12 +753,17 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
             if not audio_path.exists():
                 audio_path = None
 
+            # 从图片分配信息中获取字幕文本
+            subtitle_text = ''
+            if image_assignments and i <= len(image_assignments):
+                subtitle_text = image_assignments[i - 1].get('text', '')
+
             scenes.append(Scene(
                 index=i,
                 audio_path=audio_path,
                 video_path=video_file,
                 image_path=None,
-                subtitle='',
+                subtitle=subtitle_text,
                 duration=duration
             ))
 
@@ -822,12 +831,17 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
                             if image_path:
                                 break
 
+                # 从图片分配信息中获取字幕文本
+                subtitle_text = ''
+                if image_assignments and i <= len(image_assignments):
+                    subtitle_text = image_assignments[i - 1].get('text', '')
+
                 scenes.append(Scene(
                     index=i,
                     audio_path=audio_file,
                     video_path=None,
                     image_path=image_path,
-                    subtitle='',
+                    subtitle=subtitle_text,
                     duration=duration
                 ))
 
@@ -1282,6 +1296,30 @@ def process_project(
         force=regenerate_audio
     )
     stage_times['audio'] = time.time() - audio_t0
+
+    # 如果已有音频但没有分段信息，从文章中解析字幕文本
+    if not segments_info:
+        article_dir = project_dir / '01_article'
+        if article_dir.exists():
+            article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
+            if article_files:
+                try:
+                    with open(article_files[0], 'r', encoding='utf-8') as f:
+                        raw_text = f.read()
+                    raw_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
+                    text = re.sub(r'```[\s\S]*?```', '', raw_text)
+                    text = re.sub(r'`[^`]*`', '', text)
+                    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+                    text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
+                    text = re.sub(r'<[^>]+>', '', text)
+                    text = re.sub(r'\n{3,}', '\n\n', text)
+                    parsed_segments, _ = parse_article_segments(text, default_voice=getattr(args, 'voice', 'Xiaoxiao'))
+                    segments_info = [
+                        {'voice': v, 'image': img, 'text': content, 'index': i}
+                        for i, (v, content, img) in enumerate(parsed_segments, 1)
+                    ]
+                except Exception:
+                    pass
 
     # 发现场景（传递图片分配信息）
     scenes = find_scenes(project_dir, image_assignments=segments_info)
