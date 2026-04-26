@@ -110,6 +110,115 @@ TRANSITIONS = {
 }
 
 
+# 项目模板预设
+PROJECT_TEMPLATES = {
+    'news': {
+        'mode': 'image',
+        'resolution': '1920x1080',
+        'fps': 30,
+        'subtitle_style': 'news',
+        'transition': 'fade',
+        'voice': 'Yunjian',
+        'article': """# 今日新闻
+
+@全局:云健
+@默认图: 新闻台标
+
+欢迎收看今日新闻。
+
+@女声: @图:现场 记者现场报道，投资者情绪高涨。
+
+@云健: 第二条新闻：国际油价回落。
+
+@女声: @图:油价 布伦特原油跌至80美元。
+
+@云健: 第三条新闻：央行宣布降准。
+
+感谢收看今日新闻。
+"""
+    },
+    'food': {
+        'mode': 'image',
+        'resolution': '1080x1920',
+        'fps': 30,
+        'subtitle_style': 'tiktok',
+        'transition': 'zoomin',
+        'voice': 'Xiaoxiao',
+        'article': """# 美食探店
+
+@全局:女声
+@默认图: 餐厅环境
+
+@男声: 大家好，欢迎来到美食探店。
+
+@图:招牌菜
+@男声: 这是我们的招牌菜，色香味俱全。
+
+回到女声介绍餐厅环境。
+
+@图:厨师
+@男声: 我们的大厨有20年经验。
+
+@图:食材
+@女声: 所有食材都是当天采购。
+
+@图:价格
+@男声: 价格非常亲民。
+
+@女声: 欢迎来品尝！
+"""
+    },
+    'tutorial': {
+        'mode': 'image',
+        'resolution': '1920x1080',
+        'fps': 30,
+        'subtitle_style': 'youtube',
+        'transition': 'slideleft',
+        'voice': 'Xiaoyi',
+        'article': """# Python入门课程
+
+@全局:晓伊
+@默认图: 课程封面
+
+欢迎来到Python入门课程。我是主讲老师李老师。
+
+@云希: 我是助教小张，负责解答大家的问题。
+
+今天我们先了解什么是Python。
+
+@云希: Python是一种简单易学但功能强大的编程语言。
+
+接下来我们安装Python环境。
+"""
+    },
+    'education': {
+        'mode': 'image',
+        'resolution': '1920x1080',
+        'fps': 30,
+        'subtitle_style': 'minimal',
+        'transition': 'fade',
+        'voice': 'Yunyang',
+        'article': """# 历史知识科普
+
+@全局:男声
+@默认图: 历史背景
+
+今天我们来聊聊三国时期的故事。
+
+@图:诸葛亮
+@女声: 诸葛亮是蜀汉的丞相，以智慧著称。
+
+@男声: 他草船借箭、空城计的故事家喻户晓。
+
+@图:赤壁
+@女声: 赤壁之战是三国时期最著名的战役之一。
+
+@男声: 感谢收听，我们下期再见！
+"""
+    }
+}
+
+
 @dataclass
 class Scene:
     """场景数据类"""
@@ -441,8 +550,11 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
         return False, []
 
 
-def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = '+0%') -> tuple:
+def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = '+0%', force: bool = False) -> tuple:
     """检查并自动生成音频
+
+    Args:
+        force: True=强制重新生成，删除已有音频
 
     Returns:
         (success, segments_info)
@@ -452,9 +564,15 @@ def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = 
     audio_dir = project_dir / '03_audio'
     article_dir = project_dir / '01_article'
 
-    # 如果已经有音频，跳过
-    if audio_dir.exists() and list(audio_dir.glob('*.mp3')):
+    # 如果已经有音频且非强制模式，跳过
+    if not force and audio_dir.exists() and list(audio_dir.glob('*.mp3')):
         return False, []
+
+    # 强制模式：删除已有音频
+    if force and audio_dir.exists():
+        for f in audio_dir.glob('*.mp3'):
+            f.unlink()
+        print(f"🔄 强制重新生成音频，已清理旧音频")
 
     # 查找文章文件
     if not article_dir.exists():
@@ -733,8 +851,12 @@ def create_scene_with_effects(
         duration = scene.duration
         total_frames = int(duration * fps)
 
+        # 智能裁剪：等比放大到完全覆盖目标尺寸，居中裁剪，减少黑边
+        crop_vf = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,"
+
         # Ken Burns 效果：缓慢缩放和平移
         vf_filter = (
+            crop_vf +
             f"zoompan=z='min(zoom+0.0005,1.1)':d={total_frames}:"
             f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={width}x{height},"
             f"fps={fps},format=yuv420p,trim=duration={duration}"
@@ -1022,10 +1144,12 @@ def process_project(
     # 自动从文章生成音频（如果没有音频但有文章）
     # 返回音频分段信息，包含音色和图片分配
     audio_t0 = time.time()
+    regenerate_audio = getattr(args, 'regenerate_audio', False)
     audio_success, segments_info = auto_generate_audio(
         project_dir,
         voice=getattr(args, 'voice', 'Xiaoxiao'),
-        rate=getattr(args, 'rate', '+0%')
+        rate=getattr(args, 'rate', '+0%'),
+        force=regenerate_audio
     )
     stage_times['audio'] = time.time() - audio_t0
 
@@ -1322,6 +1446,26 @@ def process_project(
                 print(f"     场景{i:02d}: {sv_duration:5.1f}s | {sv_size:5.1f}MB")
         print(f"{'─'*60}")
 
+        # 自动提取封面
+        if not preview_mode and output_path.exists():
+            cover_path = final_dir / 'cover.jpg'
+            try:
+                # 提取中间帧作为封面
+                mid_time = final_duration / 2 if final_duration > 0 else 1
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', str(output_path),
+                    '-ss', str(mid_time),
+                    '-vframes', '1',
+                    '-q:v', '2',
+                    str(cover_path)
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if cover_path.exists():
+                    print(f"\n🖼️  封面已提取: {cover_path.name}")
+            except Exception as e:
+                pass  # 封面提取失败不影响主流程
+
         return output_path
 
     finally:
@@ -1329,11 +1473,24 @@ def process_project(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def init_project_wizard(project_dir: Path) -> bool:
-    """交互式项目初始化向导"""
-    print(f"\n{'='*60}")
-    print("🚀 项目初始化向导")
-    print(f"{'='*60}")
+def init_project_wizard(project_dir: Path, template: str = None) -> bool:
+    """交互式项目初始化向导
+
+    Args:
+        template: 可选，使用预设模板（news/food/tutorial/education）
+    """
+    # 检查是否使用模板
+    template_config = None
+    if template and template in PROJECT_TEMPLATES:
+        template_config = PROJECT_TEMPLATES[template]
+        print(f"\n{'='*60}")
+        print(f"🚀 项目初始化向导 - 使用模板: {template}")
+        print(f"{'='*60}")
+    else:
+        print(f"\n{'='*60}")
+        print("🚀 项目初始化向导")
+        print(f"{'='*60}")
+
     print(f"📁 项目路径: {project_dir}")
 
     if project_dir.exists() and any(project_dir.iterdir()):
@@ -1345,56 +1502,71 @@ def init_project_wizard(project_dir: Path) -> bool:
 
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. 选择模式
-    print("\n📋 请选择项目模式:")
-    print("  1) 🖼️  图片模式 - 文章 + 图片素材")
-    print("  2) 🎥 视频模式 - 文章 + 原视频素材")
-    print("  3) 🔀 混合模式 - 文章 + 图片 + 视频")
-    mode_choice = input("选择 [1/2/3] (默认: 1): ").strip() or '1'
-
-    modes = {'1': 'image', '2': 'video', '3': 'hybrid'}
-    mode = modes.get(mode_choice, 'image')
-
-    # 2. 选择平台
-    print("\n📱 请选择目标平台:")
-    print("  1) 📱 抖音/快手 - 1080×1920 (9:16)")
-    print("  2) 🎬 B站/YouTube - 1920×1080 (16:9)")
-    print("  3) 💬 视频号 - 1920×1080 (16:9)")
-    print("  4) ⚙️  自定义")
-    platform_choice = input("选择 [1/2/3/4] (默认: 2): ").strip() or '2'
-
-    platforms = {
-        '1': ('1080x1920', 'tiktok', 'zoomin', 30),
-        '2': ('1920x1080', 'news', 'fade', 30),
-        '3': ('1920x1080', 'news', 'fade', 30),
-        '4': None
-    }
-    platform = platforms.get(platform_choice)
-
-    if platform is None:
-        # 自定义
-        resolution = input("分辨率 (如 1920x1080): ").strip() or '1920x1080'
-        subtitle_style = input("字幕样式 [news/youtube/tiktok/minimal] (默认: news): ").strip() or 'news'
-        transition = input("转场效果 [fade/wipeleft/wiperight/slideleft/zoomin/none] (默认: fade): ").strip() or 'fade'
-        fps = int(input("帧率 (默认: 30): ").strip() or '30')
+    if template_config:
+        # 使用模板预设
+        mode = template_config['mode']
+        resolution = template_config['resolution']
+        fps = template_config['fps']
+        subtitle_style = template_config['subtitle_style']
+        transition = template_config['transition']
+        voice = template_config['voice']
+        print(f"\n📋 模板配置:")
+        print(f"  模式: {mode}")
+        print(f"  分辨率: {resolution}")
+        print(f"  字幕: {subtitle_style}")
+        print(f"  转场: {transition}")
+        print(f"  音色: {voice}")
     else:
-        resolution, subtitle_style, transition, fps = platform
+        # 1. 选择模式
+        print("\n📋 请选择项目模式:")
+        print("  1) 🖼️  图片模式 - 文章 + 图片素材")
+        print("  2) 🎥 视频模式 - 文章 + 原视频素材")
+        print("  3) 🔀 混合模式 - 文章 + 图片 + 视频")
+        mode_choice = input("选择 [1/2/3] (默认: 1): ").strip() or '1'
 
-    # 3. 选择音色
-    print("\n🎙️  请选择默认AI音色:")
-    print("  1) 👩 晓晓 - 活泼女声 (推荐)")
-    print("  2) 👨 云扬 - 成熟男声")
-    print("  3) 👦 云希 - 年轻男声")
-    print("  4) 👩 晓伊 - 成熟女声")
-    print("  5) 👩 云夏 - 年轻女声")
-    print("  6) 👨 云健 - 新闻播报男声")
-    voice_choice = input("选择 [1-6] (默认: 1): ").strip() or '1'
+        modes = {'1': 'image', '2': 'video', '3': 'hybrid'}
+        mode = modes.get(mode_choice, 'image')
 
-    voices = {
-        '1': 'Xiaoxiao', '2': 'Yunyang', '3': 'Yunxi',
-        '4': 'Xiaoyi', '5': 'Yunxia', '6': 'Yunjian'
-    }
-    voice = voices.get(voice_choice, 'Xiaoxiao')
+        # 2. 选择平台
+        print("\n📱 请选择目标平台:")
+        print("  1) 📱 抖音/快手 - 1080×1920 (9:16)")
+        print("  2) 🎬 B站/YouTube - 1920×1080 (16:9)")
+        print("  3) 💬 视频号 - 1920×1080 (16:9)")
+        print("  4) ⚙️  自定义")
+        platform_choice = input("选择 [1/2/3/4] (默认: 2): ").strip() or '2'
+
+        platforms = {
+            '1': ('1080x1920', 'tiktok', 'zoomin', 30),
+            '2': ('1920x1080', 'news', 'fade', 30),
+            '3': ('1920x1080', 'news', 'fade', 30),
+            '4': None
+        }
+        platform = platforms.get(platform_choice)
+
+        if platform is None:
+            # 自定义
+            resolution = input("分辨率 (如 1920x1080): ").strip() or '1920x1080'
+            subtitle_style = input("字幕样式 [news/youtube/tiktok/minimal] (默认: news): ").strip() or 'news'
+            transition = input("转场效果 [fade/wipeleft/wiperight/slideleft/zoomin/none] (默认: fade): ").strip() or 'fade'
+            fps = int(input("帧率 (默认: 30): ").strip() or '30')
+        else:
+            resolution, subtitle_style, transition, fps = platform
+
+        # 3. 选择音色
+        print("\n🎙️  请选择默认AI音色:")
+        print("  1) 👩 晓晓 - 活泼女声 (推荐)")
+        print("  2) 👨 云扬 - 成熟男声")
+        print("  3) 👦 云希 - 年轻男声")
+        print("  4) 👩 晓伊 - 成熟女声")
+        print("  5) 👩 云夏 - 年轻女声")
+        print("  6) 👨 云健 - 新闻播报男声")
+        voice_choice = input("选择 [1-6] (默认: 1): ").strip() or '1'
+
+        voices = {
+            '1': 'Xiaoxiao', '2': 'Yunyang', '3': 'Yunxi',
+            '4': 'Xiaoyi', '5': 'Yunxia', '6': 'Yunjian'
+        }
+        voice = voices.get(voice_choice, 'Xiaoxiao')
 
     # 4. 创建目录结构
     print(f"\n📂 创建目录结构...")
@@ -1448,7 +1620,10 @@ def init_project_wizard(project_dir: Path) -> bool:
 @{'男声' if voice in ['Xiaoxiao', 'Xiaoyi', 'Yunxia'] else '女声'}: 感谢观看！
 """
         }
-        article_path.write_text(article_templates[mode], encoding='utf-8')
+        if template_config:
+            article_path.write_text(template_config['article'], encoding='utf-8')
+        else:
+            article_path.write_text(article_templates[mode], encoding='utf-8')
         print(f"  ✅ 01_article/文章.md")
 
     # 6. 生成项目配置文件
@@ -1751,12 +1926,17 @@ AI配音音色 (--voice):
                        help='语速调节 (默认: +0%%)')
     parser.add_argument('--init', action='store_true',
                        help='交互式初始化新项目')
+    parser.add_argument('--template',
+                       choices=list(PROJECT_TEMPLATES.keys()),
+                       help='使用预设模板初始化 (news/food/tutorial/education)')
     parser.add_argument('--check', action='store_true',
                        help='只检查素材，不生成视频')
     parser.add_argument('--parallel', action='store_true',
                        help='并行生成场景（速度更快）')
     parser.add_argument('--preview', action='store_true',
                        help='预览模式：只生成第一个场景，快速验证效果')
+    parser.add_argument('--regenerate-audio', action='store_true',
+                       help='强制重新生成音频（保留已有场景）')
 
     args = parser.parse_args()
 
@@ -1766,12 +1946,12 @@ AI配音音色 (--voice):
         sys.exit(1)
 
     # 项目初始化向导
-    if args.init:
+    if args.init or args.template:
         if args.project:
             project_dir = Path(args.project)
         else:
             project_dir = Path(input("请输入项目路径: ").strip())
-        if init_project_wizard(project_dir):
+        if init_project_wizard(project_dir, template=args.template):
             if input("\n是否立即检查素材? [y/N]: ").strip().lower() == 'y':
                 check_project_materials(project_dir)
         sys.exit(0)
