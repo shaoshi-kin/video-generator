@@ -55,7 +55,7 @@ SUBTITLE_STYLES = {
         'borderw': 2,
         'bordercolor': 'black',
         'position': 'bottom',
-        'y_offset': 150
+        'y_offset': 100
     },
     'youtube': {
         'font': 'Arial-Bold',
@@ -65,7 +65,7 @@ SUBTITLE_STYLES = {
         'borderw': 3,
         'bordercolor': 'black',
         'position': 'bottom',
-        'y_offset': 120
+        'y_offset': 80
     },
     'minimal': {
         'font': 'SourceHanSansSC-Regular',
@@ -1744,8 +1744,8 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
 
         platforms = {
             '1': ('1080x1920', 'tiktok', 'zoomin', 30),
-            '2': ('1920x1080', 'news', 'fade', 30),
-            '3': ('1920x1080', 'news', 'fade', 30),
+            '2': ('1920x1080', 'youtube', 'fade', 30),
+            '3': ('1920x1080', 'youtube', 'fade', 30),
             '4': None
         }
         platform = platforms.get(platform_choice)
@@ -1845,9 +1845,9 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'transition': transition,
         'voice': voice,
         'transition_duration': 0.5,
-        'rate': '+0%',
+        'rate': '+18%',
         'scene_fade': 0.0,
-        'bgm_volume': 0.3,
+        'bgm_volume': 0.25,
         'watermark': None,
         'watermark_position': 'bottom-right',
         'sfx': False,
@@ -1881,7 +1881,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
 | `resolution` | `{resolution}` | 输出分辨率，如 `1920x1080`(横屏) / `1080x1920`(竖屏) |
 | `fps` | `{fps}` | 帧率，默认 30 |
 | `voice` | `{voice}` | 默认AI配音音色 |
-| `rate` | `+0%` | 语速调节，如 `+10%`(加快) / `-10%`(放慢) |
+| `rate` | `+18%` | 语速调节，如 `+10%`(加快) / `-10%`(放慢) |
 
 ### 视觉参数
 
@@ -1900,7 +1900,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
 
 | 参数 | 当前值 | 中文说明 |
 |------|--------|----------|
-| `bgm_volume` | `0.3` | 背景音乐音量，范围 0.0~1.0，0 为静音 |
+| `bgm_volume` | `0.25` | 背景音乐音量，范围 0.0~1.0，0 为静音 |
 | `sfx` | `false` | 是否启用转场音效，`true`(开启，自动读取 `02_sfx/` 目录) / `false`(关闭) |
 
 ## 字幕样式列表
@@ -2264,8 +2264,8 @@ AI配音音色 (--voice):
     parser.add_argument('--intro', help='片头视频路径')
     parser.add_argument('--outro', help='片尾视频路径')
     parser.add_argument('--bgm', '-b', help='背景音乐路径')
-    parser.add_argument('--bgm-volume', type=float, default=0.3,
-                       help='背景音乐音量 (0.0-1.0, 默认: 0.3)')
+    parser.add_argument('--bgm-volume', type=float, default=0.25,
+                       help='背景音乐音量 (0.0-1.0, 默认: 0.25)')
     parser.add_argument('--resolution', default='1920x1080',
                        help='分辨率 (默认: 1920x1080)')
     parser.add_argument('--fps', type=int, default=30, help='帧率 (默认: 30)')
@@ -2274,8 +2274,8 @@ AI配音音色 (--voice):
                        choices=['Xiaoxiao', 'Xiaoyi', 'Yunxi', 'Yunjian', 'Yunxia', 'Yunyang',
                                'HsiaoChen', 'HsiaoYu', 'YunJhe', 'HiuMaan', 'HiuGaai', 'WanLung'],
                        help='AI配音音色 (默认: Xiaoxiao)')
-    parser.add_argument('--rate', default='+0%',
-                       help='语速调节 (默认: +0%%)')
+    parser.add_argument('--rate', default='+18%',
+                       help='语速调节 (默认: +18%%)')
     parser.add_argument('--init', action='store_true',
                        help='交互式初始化新项目')
     parser.add_argument('--template',
