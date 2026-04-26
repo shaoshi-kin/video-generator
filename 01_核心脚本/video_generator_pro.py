@@ -1380,14 +1380,26 @@ def process_project(
                 print("✅ 片头片尾添加完成")
 
         # 添加背景音乐
+        bgm_path = None
         if args.bgm:
+            # 显式指定 BGM 路径
             bgm_path = Path(args.bgm)
-            if bgm_path.exists():
-                print("🎵 添加背景音乐...")
-                with_bgm = temp_dir / 'with_bgm.mp4'
-                if add_bgm(main_video, bgm_path, with_bgm, args.bgm_volume):
-                    main_video = with_bgm
-                    print("✅ BGM添加完成")
+        else:
+            # 自动查找项目 06_bgm/ 目录下的音乐文件
+            bgm_dir = project_dir / '06_bgm'
+            if bgm_dir.exists():
+                music_exts = ['.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg']
+                music_files = sorted([f for f in bgm_dir.iterdir() if f.suffix.lower() in music_exts])
+                if music_files:
+                    bgm_path = music_files[0]
+                    print(f"🎵 自动发现 BGM: {bgm_path.name}")
+
+        if bgm_path and bgm_path.exists():
+            print(f"🎵 添加背景音乐 (音量: {int(args.bgm_volume * 100)}%)...")
+            with_bgm = temp_dir / 'with_bgm.mp4'
+            if add_bgm(main_video, bgm_path, with_bgm, args.bgm_volume):
+                main_video = with_bgm
+                print("✅ BGM添加完成")
 
         # 复制到输出位置
         shutil.copy(str(main_video), str(output_path))
@@ -1575,7 +1587,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         dirs.append('02_images')
     if mode in ('video', 'hybrid'):
         dirs.append('03_videos')
-    dirs.extend(['04_scenes', '05_final'])
+    dirs.extend(['04_scenes', '05_final', '06_bgm'])
 
     for d in dirs:
         (project_dir / d).mkdir(exist_ok=True)
@@ -1656,7 +1668,9 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         print(f"  1. 放入视频到: {project_dir}/03_videos/")
         print(f"     命名: scene_01.mp4, scene_02.mp4, ...")
     print(f"  2. 编辑文章: {project_dir}/01_article/文章.md")
-    print(f"  3. 生成视频:")
+    print(f"  3. (可选) 放入 BGM 到: {project_dir}/06_bgm/")
+    print(f"     支持: .mp3 .wav .aac .m4a，自动循环播放")
+    print(f"  4. 生成视频:")
     print(f"     python3 video_generator_pro.py -p {project_dir} --voice {voice}")
 
     if mode in ('image', 'hybrid'):
@@ -1796,7 +1810,20 @@ def check_project_materials(project_dir: Path, image_assignments: list = None) -
     if existing_scenes:
         print(f"  ✅ 场景片段: {len(existing_scenes)} 个 (将跳过生成)")
 
-    # 5. 匹配检查
+    # 5. 检查 BGM
+    bgm_dir = project_dir / '06_bgm'
+    bgm_files = []
+    if bgm_dir.exists():
+        music_exts = ['.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg']
+        bgm_files = sorted([f for f in bgm_dir.iterdir() if f.suffix.lower() in music_exts])
+    result['stats']['bgm'] = len(bgm_files)
+    if bgm_files:
+        print(f"  ✅ BGM: {len(bgm_files)} 个")
+        for bgm in bgm_files:
+            duration = get_media_duration(str(bgm))
+            print(f"     - {bgm.name} ({duration:.1f}s)")
+
+    # 6. 匹配检查
     if audio_files:
         audio_count = len(audio_files)
         if videos:
