@@ -1214,7 +1214,7 @@ def add_watermark(
         '-i', str(watermark),
         '-filter_complex',
         f"[1:v]format=rgba,colorchannelmixer=aa={opacity}[wm];"
-        f"[0:v][wm]overlay={pos}:enable='between(t\,0\,99999)'[v]",
+        f"[0:v][wm]overlay={pos}[v]",
         '-map', '[v]', '-map', '0:a',
         '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
         '-c:a', 'copy',
@@ -1806,11 +1806,105 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'rate': '+0%',
         'scene_fade': 0.0,
         'subtitle_animation': 'none',
+        'bgm_volume': 0.3,
+        'watermark': None,
+        'watermark_position': 'bottom-right',
+        'sfx': False,
         'created': str(datetime.datetime.now())
     }
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
     print(f"  ✅ .video_config.json")
+
+    # 7. 生成参数说明文档
+    param_doc_path = project_dir / '参数说明.md'
+    if not param_doc_path.exists():
+        param_doc = f"""# 项目参数说明
+
+> 本文件由初始化向导自动生成，可直接编辑 `.video_config.json` 修改参数，
+> 无需每次在命令行输入。
+
+## 当前配置
+
+```json
+{json.dumps(config, ensure_ascii=False, indent=2)}
+```
+
+## 参数详解
+
+### 基础参数
+
+| 参数 | 当前值 | 说明 |
+|------|--------|------|
+| `mode` | `{mode}` | 项目模式: image(图片) / video(视频) / hybrid(混合) |
+| `resolution` | `{resolution}` | 输出分辨率 |
+| `fps` | `{fps}` | 帧率 |
+| `voice` | `{voice}` | 默认AI音色 |
+| `rate` | `+0%` | 语速调节 |
+
+### 视觉参数
+
+| 参数 | 当前值 | 说明 |
+|------|--------|------|
+| `transition` | `{transition}` | 转场效果 |
+| `transition_duration` | `0.5` | 转场时长(秒) |
+| `scene_fade` | `0.0` | 场景淡入淡出(秒)，建议0.2-0.5 |
+| `subtitle` | `false` | 是否启用字幕 |
+| `subtitle_style` | `{subtitle_style}` | 字幕样式 |
+| `subtitle_animation` | `none` | 字幕动画: none / slide_up / fade_in |
+| `watermark` | `null` | 水印图片路径(相对或绝对) |
+| `watermark_position` | `bottom-right` | 水印位置: top-left / top-right / bottom-left / bottom-right / center |
+
+### 音频参数
+
+| 参数 | 当前值 | 说明 |
+|------|--------|------|
+| `bgm_volume` | `0.3` | 背景音乐音量(0.0-1.0) |
+| `sfx` | `false` | 是否启用转场音效(自动读取 `02_sfx/` 目录) |
+
+## 快速修改方法
+
+### 方法1：直接改配置文件
+编辑 `.video_config.json`，修改对应值，下次运行 `python3 video_generator_pro.py -p {project_dir}` 即可生效。
+
+### 方法2：命令行覆盖
+命令行参数优先级高于配置文件：
+
+```bash
+python3 video_generator_pro.py -p {project_dir} \
+    --scene-fade 0.3 \
+    --subtitle --subtitle-animation slide_up \
+    --transition pixelize \
+    --watermark logo.png \
+    --watermark-position bottom-right \
+    --sfx
+```
+
+## 转场效果列表
+
+```
+fade dissolve wipeleft wiperight wipeup wipedown
+slideleft slideright slideup slidedown
+smoothleft smoothright smoothup smoothdown
+circlecrop rectcrop circleclose circleopen
+horzclose horzopen vertclose vertopen
+pixelize radial distance fadeblack fadewhite
+diagtl diagtr diagbl diagbr
+hlslice hrslice vuslice vdslice
+```
+
+## 音色列表
+
+```
+Xiaoxiao(晓晓-活泼女声)  Xiaoyi(晓伊-成熟女声)  Yunxia(云夏-年轻女声)
+Yunyang(云扬-成熟男声)  Yunxi(云希-年轻男声)  Yunjian(云健-新闻男声)
+```
+
+---
+*生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
+"""
+        param_doc_path.write_text(param_doc, encoding='utf-8')
+        print(f"  ✅ 参数说明.md")
 
     # 7. 显示后续步骤
     print(f"\n{'='*60}")
