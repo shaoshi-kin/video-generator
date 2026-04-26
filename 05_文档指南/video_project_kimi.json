@@ -1,0 +1,138 @@
+{
+  "source_article": "1.md",
+  "extracted_topics": [
+    {
+      "title": "普华永道赔偿恒大股东10亿",
+      "summary": "普华永道因审计失职赔偿恒大股东10亿港币。",
+      "hook": "震惊！普华永道为财务造假付出天价代价！",
+      "why_good": "涉及巨额赔偿、企业诚信和监管话题，引人关注。",
+      "difficulty": "medium",
+      "suggested_duration": "60s"
+    },
+    {
+      "title": "股民维权诉讼成功索赔4700万",
+      "summary": "公众号组织股民集体诉讼维权，成功索赔4700万。",
+      "hook": "股民如何团结起来，对抗不公？",
+      "why_good": "展现了股民权益保护的重要性和实际成效，具有教育意义。",
+      "difficulty": "medium",
+      "suggested_duration": "60s"
+    },
+    {
+      "title": "赌气温超22度作弊赚3.4万美元",
+      "summary": "法国男子通过加热器作弊，赢得赌注3.4万美元。",
+      "hook": "奇葩！男子作弊赌气温，竟轻松赢大奖？",
+      "why_good": "故事性强，包含意外和幽默元素，易于吸引观众。",
+      "difficulty": "easy",
+      "suggested_duration": "30s"
+    }
+  ],
+  "selected_topic": {
+    "title": "普华永道赔偿恒大股东10亿",
+    "summary": "普华永道因审计失职赔偿恒大股东10亿港币。",
+    "hook": "震惊！普华永道为财务造假付出天价代价！",
+    "why_good": "涉及巨额赔偿、企业诚信和监管话题，引人关注。",
+    "difficulty": "medium",
+    "suggested_duration": "60s"
+  },
+  "script": {
+    "topic": "普华永道赔偿恒大股东10亿",
+    "duration": "60s",
+    "target_platform": "视频号",
+    "scenes": [
+      {
+        "time": "0-3s",
+        "visual": "视频开头，出现标题文字“震惊！普华永道为财务造假付出天价代价！”",
+        "audio": "震惊！普华永道天价赔偿恒大股东",
+        "subtitle": "震惊！普华永道天价赔偿恒大股东"
+      },
+      {
+        "time": "4-6s",
+        "visual": "普华永道公司大楼的外景",
+        "audio": "普华永道赔偿恒大股东10亿港币",
+        "subtitle": "普华永道赔偿恒大股东10亿港币"
+      },
+      {
+        "time": "7-10s",
+        "visual": "普华永道和恒大的logo交替出现",
+        "audio": "因审计失职，恒大财务报表出问题",
+        "subtitle": "因审计失职，恒大财务报表出问题"
+      },
+      {
+        "time": "11-15s",
+        "visual": "展示普华永道之前的罚款记录和新闻报道",
+        "audio": "之前已被罚款7.5亿，累计17.5亿",
+        "subtitle": "之前已被罚款7.5亿，累计17.5亿"
+      },
+      {
+        "time": "16-20s",
+        "visual": "普华永道赔偿金流向恒大股东的动画",
+        "audio": "10亿赔偿金，专门补偿股东",
+        "subtitle": "10亿赔偿金，专门补偿股东"
+      },
+      {
+        "time": "21-25s",
+        "visual": "国内造假案赔偿金对比的图表",
+        "audio": "国内赔偿案例不多，这笔赔偿创下纪录",
+        "subtitle": "国内赔偿案例不多，创纪录"
+      },
+      {
+        "time": "26-30s",
+        "visual": "公众号文章截图，显示帮助股民维权",
+        "audio": "我们公众号长期帮助股民维权",
+        "subtitle": "我们公众号长期帮助股民维权"
+      },
+      {
+        "time": "31-35s",
+        "visual": "股民在法庭维权的画面",
+        "audio": "维权很难，但我们会坚持",
+        "subtitle": "维权很难，但我们会坚持"
+      },
+      {
+        "time": "36-40s",
+        "visual": "普华永道公司内部，员工忙碌工作",
+        "audio": "普华永道这次教训深刻",
+        "subtitle": "普华永道这次教训深刻"
+      },
+      {
+        "time": "41-45s",
+        "visual": "普华永道和恒大的logo再次交替出现",
+        "audio": "普华永道赔偿，恒大股东得安慰",
+        "subtitle": "普华永道赔偿，恒大股东得安慰"
+      },
+      {
+        "time": "46-50s",
+        "visual": "普华永道公司大楼的夜景",
+        "audio": "关注我们，了解更多财经资讯",
+        "subtitle": "关注我们，了解更多财经资讯"
+      },
+      {
+        "time": "51-60s",
+        "visual": "视频结尾，出现公众号二维码和引导关注的话术",
+        "audio": "扫码关注，不错过任何财经热点",
+        "subtitle": "扫码关注，不错过任何财经热点"
+      }
+    ],
+    "full_script": "震惊！普华永道天价赔偿恒大股东。普华永道赔偿恒大股东10亿港币。因审计失职，恒大财务报表出问题。之前已被罚款7.5亿，累计17.5亿。10亿赔偿金，专门补偿股东。国内赔偿案例不多，创纪录。我们公众号长期帮助股民维权。维权很难，但我们会坚持。普华永道这次教训深刻。普华永道赔偿，恒大股东得安慰。关注我们，了解更多财经资讯。扫码关注，不错过任何财经热点。",
+    "bmg_suggestion": "选择节奏紧张、带有警示意味的背景音乐，以突出普华永道赔偿事件的严重性和警示效果。",
+    "subtitle_tips": "字幕应简洁明了，突出关键信息。字体颜色与背景形成对比，确保易读性。"
+  },
+  "image_prompts": [
+    "Dynamic headline 'Shocking! PwC pays a sky-high price for financial fraud!' in bold neon lights on a dark background, cyberpunk style, dramatic lighting, high contrast, cool tones.",
+    "Aerial view of PwC corporate building, downtown at dusk, cinematic lighting, high resolution, modern architecture, muted colors, sharp focus.",
+    "Alternating logos of PwC and Evergrande in sleek digital interface, high contrast, futuristic style, neon highlights, dark background, sharp details.",
+    "News clippings and financial records on a table, documentary style, natural lighting, warm tones, cluttered desk, close-up shot, high definition.",
+    "Animated flow of PwC compensation to Evergrande shareholders, infographic style, clear lines, bold colors, high contrast, corporate sleekness, high resolution.",
+    "Comparison chart of domestic fraud case compensations, financial report style, clean lines, high contrast, bright colors, high definition, infographic simplicity.",
+    "Screenshot of a public account article, digital text, high resolution, clear layout, modern font, white background, sharp and crisp.",
+    "Protesters in court for stockholder rights, news report style, dramatic lighting, tense atmosphere, high contrast, cool tones, high definition.",
+    "Busy PwC office interior, corporate hustle, cinematic lighting, modern workspace, high contrast, muted colors, high definition.",
+    "Repetition of PwC and Evergrande logos, sleek digital interface, high contrast, futuristic style, neon highlights, dark background, sharp details.",
+    "PwC corporate building at night, urban skyline, cinematic lighting, high resolution, modern architecture, vibrant colors, sharp focus.",
+    "QR code for public account with guiding text, clear digital display, high contrast, modern font, clean white background, high resolution."
+  ],
+  "video_prompts": [
+    "Dynamic zoom-in on title text 'Shocking! PricewaterhouseCoopers pays a hefty price for financial fraud!' with a dramatic background.",
+    "Smooth transition to a screenshot of a public account article, highlighting the text 'Helping stockholders to claim their rights' with a focused spotlight.",
+    "Fade to the final scene featuring a QR code and tagline 'Follow us to stay informed' with a gentle fade-out effect."
+  ]
+}

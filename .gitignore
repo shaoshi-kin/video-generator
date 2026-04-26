@@ -1,0 +1,31 @@
+# 生成的音频文件
+*.mp3
+*.wav
+*.aac
+
+# 生成的视频文件
+*.mp4
+*.mov
+*.avi
+
+# 运行时数据
+quota_tracker.json
+
+# 临时文件
+CONDAEND
+ENDOFFILE
+EOF
+*.tmp
+*.temp
+
+# macOS
+.DS_Store
+
+# 项目输出目录
+项目输出/
+projects/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
