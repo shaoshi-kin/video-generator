@@ -1587,6 +1587,8 @@ def process_project(
         watermark_path = getattr(args, 'watermark', None)
         if watermark_path:
             watermark_path = Path(watermark_path)
+            if not watermark_path.is_absolute():
+                watermark_path = project_dir / watermark_path
         if watermark_path and watermark_path.exists():
             print(f"🏷️ 添加水印 ({getattr(args, 'watermark_position', 'bottom-right')})...")
             watermarked = temp_dir / 'watermarked.mp4'
