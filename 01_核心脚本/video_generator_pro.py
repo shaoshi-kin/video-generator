@@ -27,6 +27,7 @@ import subprocess
 import argparse
 import asyncio
 import re
+import time
 import datetime
 import concurrent.futures
 from pathlib import Path
@@ -652,7 +653,8 @@ def create_scene_with_effects(
     resolution: Tuple[int, int],
     fps: int,
     add_subtitle: bool = False,
-    subtitle_style: Dict = None
+    subtitle_style: Dict = None,
+    preview: bool = False
 ) -> bool:
     """创建单个场景视频，支持缩放效果和字幕"""
 
@@ -755,6 +757,16 @@ def create_scene_with_effects(
             if subtitle_style.get('box'):
                 vf_filter += f":box=1:boxcolor={subtitle_style['boxcolor']}:boxborderw={subtitle_style['boxborderw']}"
 
+        # 编码参数：预览模式快速编码，正式模式高质量
+        if preview:
+            video_preset = 'ultrafast'
+            video_crf = '28'
+            audio_bitrate = '128k'
+        else:
+            video_preset = 'veryslow'
+            video_crf = '15'
+            audio_bitrate = '256k'
+
         # 添加音频（如果有）
         if scene.audio_path:
             cmd = [
@@ -764,13 +776,13 @@ def create_scene_with_effects(
                 '-i', str(scene.audio_path),
                 '-vf', vf_filter,
                 '-c:v', 'libx264',
-                '-preset', 'veryslow',      # 最慢预设 = 最佳压缩效率
-                '-crf', '15',                # 更低的CRF = 更好的质量
-                '-tune', 'stillimage',       # 针对静态图片优化
+                '-preset', video_preset,
+                '-crf', video_crf,
+                '-tune', 'stillimage',
                 '-pix_fmt', 'yuv420p',
                 '-c:a', 'aac',
-                '-b:a', '256k',              # 更高的音频码率
-                '-movflags', '+faststart',   # 优化网络播放
+                '-b:a', audio_bitrate,
+                '-movflags', '+faststart',
                 '-shortest',
                 str(output_path)
             ]
@@ -781,11 +793,11 @@ def create_scene_with_effects(
                 '-i', str(scene.image_path),
                 '-vf', vf_filter,
                 '-c:v', 'libx264',
-                '-preset', 'veryslow',      # 最慢预设 = 最佳压缩效率
-                '-crf', '15',                # 更低的CRF = 更好的质量
-                '-tune', 'stillimage',       # 针对静态图片优化
+                '-preset', video_preset,
+                '-crf', video_crf,
+                '-tune', 'stillimage',
                 '-pix_fmt', 'yuv420p',
-                '-movflags', '+faststart',   # 优化网络播放
+                '-movflags', '+faststart',
                 '-t', str(duration),
                 '-an',
                 str(output_path)
@@ -803,11 +815,11 @@ def create_scene_with_effects(
 
 def _generate_scene_worker(task):
     """并行场景生成工作函数"""
-    scene, scene_output, width, height, fps, add_subtitle, subtitle_style = task
+    scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview = task
     try:
         success = create_scene_with_effects(
             scene, scene_output, (width, height), fps,
-            add_subtitle, subtitle_style
+            add_subtitle, subtitle_style, preview=preview
         )
         media_name = None
         if scene.image_path:
@@ -981,8 +993,17 @@ def process_project(
 ) -> Optional[Path]:
     """处理单个项目"""
 
+    # 预览模式
+    preview_mode = getattr(args, 'preview', False)
+    start_time = time.time()
+    stage_times = {}
+
     print(f"\n{'='*60}")
-    print(f"🎬 处理项目: {project_dir.name}")
+    if preview_mode:
+        print(f"👁️  预览模式: {project_dir.name}")
+        print(f"   只生成第一个场景，快速预览效果")
+    else:
+        print(f"🎬 处理项目: {project_dir.name}")
     print(f"{'='*60}")
 
     # 检查输出目录
@@ -993,15 +1014,20 @@ def process_project(
     scenes_dir = project_dir / '04_scenes'
     scenes_dir.mkdir(exist_ok=True)
 
-    output_path = final_dir / (args.output or 'final_video_pro.mp4')
+    if preview_mode:
+        output_path = final_dir / 'preview.mp4'
+    else:
+        output_path = final_dir / (args.output or 'final_video_pro.mp4')
 
     # 自动从文章生成音频（如果没有音频但有文章）
     # 返回音频分段信息，包含音色和图片分配
+    audio_t0 = time.time()
     audio_success, segments_info = auto_generate_audio(
         project_dir,
         voice=getattr(args, 'voice', 'Xiaoxiao'),
         rate=getattr(args, 'rate', '+0%')
     )
+    stage_times['audio'] = time.time() - audio_t0
 
     # 发现场景（传递图片分配信息）
     scenes = find_scenes(project_dir, image_assignments=segments_info)
@@ -1009,7 +1035,12 @@ def process_project(
         print("❌ 未找到任何场景素材")
         return None
 
-    print(f"📁 发现 {len(scenes)} 个场景")
+    # 预览模式只取第一个场景
+    if preview_mode:
+        scenes = scenes[:1]
+        print(f"📁 发现 {len(scenes)} 个场景 (预览模式只取第一个)")
+    else:
+        print(f"📁 发现 {len(scenes)} 个场景")
     print(f"📂 场景片段保存到: {scenes_dir}")
 
     # 字幕样式
@@ -1018,7 +1049,8 @@ def process_project(
         subtitle_style = SUBTITLE_STYLES.get(args.subtitle_style, SUBTITLE_STYLES['news'])
         print(f"📝 字幕样式: {args.subtitle_style}")
 
-    print(f"✨ 转场效果: {args.transition}")
+    if not preview_mode:
+        print(f"✨ 转场效果: {args.transition}")
 
     # 处理每个场景（支持断点续传）
     scene_videos = []
@@ -1030,19 +1062,21 @@ def process_project(
     for i, scene in enumerate(scenes):
         scene_output = scenes_dir / f"scene_{scene.index:02d}.mp4"
 
-        # 断点续传：检查是否已存在且有效
-        if scene_output.exists() and scene_output.stat().st_size > 1024:
-            # 验证文件是否有效（可播放）
-            try:
-                verify_duration = get_media_duration(str(scene_output))
-                if verify_duration > 0:
-                    scene_videos.append(scene_output)
-                    skipped_scenes.append(scene.index)
-                    print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
-                    print(f"   ⏭️  已存在，跳过生成 ({verify_duration:.1f}s)")
-                    continue
-            except:
-                pass  # 文件损坏，重新生成
+        # 预览模式跳过断点续传（每次预览都重新生成）
+        if not preview_mode:
+            # 断点续传：检查是否已存在且有效
+            if scene_output.exists() and scene_output.stat().st_size > 1024:
+                # 验证文件是否有效（可播放）
+                try:
+                    verify_duration = get_media_duration(str(scene_output))
+                    if verify_duration > 0:
+                        scene_videos.append(scene_output)
+                        skipped_scenes.append(scene.index)
+                        print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
+                        print(f"   ⏭️  已存在，跳过生成 ({verify_duration:.1f}s)")
+                        continue
+                except:
+                    pass  # 文件损坏，重新生成
 
         print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
 
@@ -1058,11 +1092,12 @@ def process_project(
         if scene.audio_path:
             print(f"   🎵 音频: {scene.audio_path.name}")
 
-        pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style))
+        pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode))
 
     # 执行生成（支持并行）
     total_pending = len(pending_tasks)
-    if args.parallel and total_pending > 1:
+    scene_t0 = time.time()
+    if args.parallel and total_pending > 1 and not preview_mode:
         print(f"\n🚀 并行生成 {total_pending} 个场景...")
         with concurrent.futures.ProcessPoolExecutor() as executor:
             futures = [executor.submit(_generate_scene_worker, task) for task in pending_tasks]
@@ -1077,14 +1112,14 @@ def process_project(
                     failed_scenes.append(idx)
                     print(f"   ❌ [{len(scene_videos)+1}/{total_pending}] 场景 {idx:02d} ({media}) 失败: {result['error'] or '未知错误'}")
     else:
-        # 顺序生成
+        # 顺序生成（预览模式也用顺序）
         for task_idx, task in enumerate(pending_tasks, 1):
-            scene, scene_output, width, height, fps, add_subtitle, subtitle_style = task
+            scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview = task
             media = scene.image_path.name if scene.image_path else (scene.video_path.name if scene.video_path else '无素材')
             try:
                 success = create_scene_with_effects(
                     scene, scene_output, (width, height), fps,
-                    add_subtitle, subtitle_style
+                    add_subtitle, subtitle_style, preview=preview
                 )
                 if success and scene_output.exists():
                     scene_videos.append(scene_output)
@@ -1095,6 +1130,7 @@ def process_project(
             except Exception as e:
                 print(f"   ❌ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 异常: {e}")
                 failed_scenes.append(scene.index)
+    stage_times['scenes'] = time.time() - scene_t0
 
     # 汇总生成结果
     print(f"\n{'─'*60}")
@@ -1110,11 +1146,30 @@ def process_project(
         print("❌ 没有成功生成任何场景")
         return None
 
+    # 预览模式：直接复制第一个场景，跳过合并/转场/片头片尾/BGM
+    if preview_mode:
+        main_video = scene_videos[0]
+        shutil.copy(str(main_video), str(output_path))
+        final_duration = get_media_duration(str(output_path))
+        final_size = output_path.stat().st_size / (1024 * 1024)
+
+        print(f"\n{'='*60}")
+        print("✅ 预览视频生成完成!")
+        print(f"{'='*60}")
+        print(f"📁 输出: {output_path}")
+        print(f"⏱️  时长: {final_duration:.1f} 秒")
+        print(f"📦 大小: {final_size:.1f} MB")
+        print(f"🎞️  场景: 1 个（预览模式）")
+        print(f"📂 场景片段: {scenes_dir}")
+
+        return output_path
+
     # 合并场景（带转场）
     print(f"\n🎞️  合并场景（转场: {args.transition}）...")
 
     merge_state_path = final_dir / '.merge_state.json'
     temp_dir = Path(tempfile.mkdtemp())
+    merge_t0 = time.time()
 
     try:
         if len(scene_videos) == 1:
@@ -1187,6 +1242,8 @@ def process_project(
                     print(f"   ❌ 合并失败，终止")
                     return None
 
+        stage_times['merge'] = time.time() - merge_t0
+
         # 添加片头片尾
         if args.intro or args.outro:
             print("🎬 添加片头片尾...")
@@ -1226,6 +1283,7 @@ def process_project(
         # 显示结果
         final_duration = get_media_duration(str(output_path))
         final_size = output_path.stat().st_size / (1024 * 1024)
+        total_time = time.time() - start_time
 
         print(f"\n{'='*60}")
         print("✅ 视频合成完成!")
@@ -1239,6 +1297,30 @@ def process_project(
         if failed_scenes:
             print(f"❌ 失败: {len(failed_scenes)} 个 {failed_scenes}")
         print(f"📂 场景片段: {scenes_dir}")
+
+        # 详细报告
+        print(f"\n{'─'*60}")
+        print("📊 生成详细报告:")
+        print(f"{'─'*60}")
+        print(f"  ⏱️  总耗时:       {total_time:.1f}s")
+        if 'audio' in stage_times:
+            print(f"  🎙️  音频生成:     {stage_times['audio']:.1f}s")
+        if 'scenes' in stage_times:
+            print(f"  🎬 场景生成:     {stage_times['scenes']:.1f}s")
+        if 'merge' in stage_times:
+            print(f"  🔗 合并转场:     {stage_times['merge']:.1f}s")
+        print(f"  📹 最终时长:     {final_duration:.1f}s")
+        print(f"  📦 文件大小:     {final_size:.1f} MB")
+        if final_duration > 0:
+            print(f"  📊 平均码率:     {final_size * 8 / final_duration:.1f} Mbps")
+        # 场景详情
+        if len(scene_videos) > 1:
+            print(f"\n  📋 各场景详情:")
+            for i, sv in enumerate(scene_videos, 1):
+                sv_duration = get_media_duration(str(sv))
+                sv_size = sv.stat().st_size / (1024 * 1024)
+                print(f"     场景{i:02d}: {sv_duration:5.1f}s | {sv_size:5.1f}MB")
+        print(f"{'─'*60}")
 
         return output_path
 
@@ -1378,6 +1460,8 @@ def init_project_wizard(project_dir: Path) -> bool:
         'subtitle_style': subtitle_style,
         'transition': transition,
         'voice': voice,
+        'transition_duration': 0.5,
+        'rate': '+0%',
         'created': str(datetime.datetime.now())
     }
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -1404,6 +1488,57 @@ def init_project_wizard(project_dir: Path) -> bool:
         print(f"\n💡 提示: 需要 {resolution} 比例的图片素材")
 
     return True
+
+
+def merge_project_config(args, project_dir: Path):
+    """加载项目 .video_config.json，命令行参数优先级 > 配置文件 > argparse 默认值"""
+    config_path = project_dir / '.video_config.json'
+    if not config_path.exists():
+        return args
+
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception:
+        return args
+
+    # 解析命令行中显式指定的参数（长参数和短参数）
+    explicit = set()
+    i = 0
+    argv = sys.argv[1:]
+    while i < len(argv):
+        arg = argv[i]
+        if arg.startswith('--'):
+            # --key=value 或 --key
+            key = arg[2:].split('=')[0].replace('-', '_')
+            explicit.add(key)
+        elif arg.startswith('-') and len(arg) == 2:
+            # 短参数 -k，跳过下一个值（如果是的话）
+            explicit.add(arg[1:])  # 简单映射
+            if i + 1 < len(argv) and not argv[i + 1].startswith('-'):
+                i += 1
+        i += 1
+
+    # 支持的配置键映射（配置文件键名 -> args 属性名）
+    config_keys = [
+        'voice', 'resolution', 'fps', 'subtitle_style', 'transition',
+        'transition_duration', 'rate', 'bgm_volume', 'subtitle', 'output'
+    ]
+
+    applied = []
+    for key in config_keys:
+        if key in config and key not in explicit:
+            if hasattr(args, key):
+                old_val = getattr(args, key)
+                new_val = config[key]
+                if old_val != new_val:
+                    setattr(args, key, new_val)
+                    applied.append(f"{key}={new_val}")
+
+    if applied:
+        print(f"   📋 已加载项目配置: {', '.join(applied)}")
+
+    return args
 
 
 def check_project_materials(project_dir: Path, image_assignments: list = None) -> dict:
@@ -1573,6 +1708,9 @@ AI配音音色 (--voice):
   # 从文章自动生成音频并合成
   python3 video_generator_pro.py -p projects/XXX --voice Xiaoxiao --rate +0%
 
+  # 快速预览（只生成第一个场景，低画质，快速验证）
+  python3 video_generator_pro.py -p projects/XXX --preview
+
   # 完整功能
   python3 video_generator_pro.py -p projects/XXX \\
     --subtitle --subtitle-style news \\
@@ -1617,6 +1755,8 @@ AI配音音色 (--voice):
                        help='只检查素材，不生成视频')
     parser.add_argument('--parallel', action='store_true',
                        help='并行生成场景（速度更快）')
+    parser.add_argument('--preview', action='store_true',
+                       help='预览模式：只生成第一个场景，快速验证效果')
 
     args = parser.parse_args()
 
@@ -1664,6 +1804,9 @@ AI配音音色 (--voice):
         if not project_dir.exists():
             print(f"❌ 项目不存在: {args.project}")
             sys.exit(1)
+
+        # 加载项目配置（命令行参数优先级 > 配置文件）
+        merge_project_config(args, project_dir)
 
         # 素材检查
         if args.check:
