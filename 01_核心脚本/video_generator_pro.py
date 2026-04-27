@@ -589,11 +589,23 @@ def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_
         os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 
     try:
-        from faster_whisper.utils import download_model
-        # 先下载/检查模型，避免边下载边识别导致体验差
-        print(f"   📦 检查模型... (模型: {model_size})")
-        model_path = download_model(model_size)
-        print(f"   ✅ 模型就绪: {model_path}")
+        from faster_whisper.utils import download_model, _MODELS
+        # 先检查模型是否已本地缓存，已缓存时跳过网络检查（秒开）
+        repo_id = _MODELS[model_size]
+        cache_dir = Path.home() / '.cache' / 'huggingface' / 'hub'
+        # 构造快照目录路径（不依赖网络）
+        expected_path = cache_dir / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+        if expected_path.exists() and any(expected_path.iterdir()):
+            # 已缓存，直接取最新快照
+            snapshots = sorted(expected_path.iterdir())
+            if snapshots:
+                model_path = str(snapshots[-1])
+                print(f"   ✅ 模型已缓存: {model_size}")
+        else:
+            # 未缓存，需要下载
+            print(f"   📦 下载模型... (模型: {model_size})")
+            model_path = download_model(model_size)
+            print(f"   ✅ 模型下载完成")
     except Exception as e:
         err_msg = str(e)
         if 'ConnectError' in err_msg or 'SSL' in err_msg or 'huggingface' in err_msg.lower():
