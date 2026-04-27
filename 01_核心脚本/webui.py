@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
 """
-视频生成器 Web UI (Gradio)
+视频生成器 Web UI (Gradio 4.x+)
 
 启动方式:
     python3 01_核心脚本/webui.py
     默认在 http://127.0.0.1:7860 打开
 
-功能:
-    - 项目列表管理
-    - 文章在线编辑
-    - 图片批量上传
-    - 可视化参数配置
-    - 一键生成视频
-    - 实时查看生成日志
-    - 视频预览和下载
+兼容 Gradio 4.x / 5.x
 """
 
 import os
 import sys
 import json
 import subprocess
-import threading
 import time
+import shutil
 from pathlib import Path
-from datetime import datetime
 
 # 添加同级目录到路径
 sys.path.insert(0, str(Path(__file__).parent))
@@ -31,8 +23,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 try:
     import gradio as gr
 except ImportError:
-    print("❌ 缺少 gradio，请安装: pip3 install 'gradio<4.0'")
+    print("❌ 缺少 gradio，请安装: pip install gradio")
     sys.exit(1)
+
+GRADIO_VERSION = int(gr.__version__.split('.')[0])
+print(f"   Gradio 版本: {gr.__version__}")
 
 # 项目根目录
 ROOT_DIR = Path(__file__).parent.parent
@@ -66,16 +61,9 @@ TRANSITIONS = [
     'fadegrays', 'hblur', 'wipetl', 'wipetr', 'wipebl', 'wipebr',
     'pixelize', 'diagtl', 'diagtr', 'hlslice', 'hrslice', 'vuslice', 'vdslice'
 ]
-
 SUBTITLE_STYLES = ['news', 'youtube', 'minimal', 'tiktok']
-
 VOICES = ['Xiaoxiao', 'Xiaoyi', 'Yunxi', 'Yunjian', 'Yunxia', 'Yunyang',
           '女声', '晓晓', '男声', '云扬', '新闻男']
-
-ANIMATIONS = ['none', 'slide_up', 'fade_in']
-
-WATERMARK_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center']
-
 RESOLUTIONS = ['1920x1080', '1080x1920', '1080x1080', '1280x720']
 
 
@@ -91,9 +79,9 @@ def list_projects():
 
 
 def load_project_info(project_name: str):
-    """加载项目信息：文章、配置、已有视频"""
+    """加载项目信息：返回 article, info, video_path, config_text"""
     if not project_name:
-        return "", "", "", "", json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2)
+        return "", "未选择项目", None, json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2)
 
     project_dir = PROJECTS_DIR / project_name
 
@@ -111,17 +99,16 @@ def load_project_info(project_name: str):
                     pass
                 break
 
-    # 图片数量
+    # 素材统计
     images_dir = project_dir / '03_images'
     img_count = len([f for f in images_dir.iterdir() if f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif']]) if images_dir.exists() else 0
-
-    # 视频数量
     videos_dir = project_dir / '04_videos'
     video_count = len([f for f in videos_dir.iterdir() if f.suffix.lower() in ['.mp4', '.mov', '.avi']]) if videos_dir.exists() else 0
+    info = f"图片: {img_count} 张 | 视频: {video_count} 个"
 
-    # 已有输出视频
+    # 已有视频
     final_dir = project_dir / '07_final'
-    latest_video = ""
+    latest_video = None
     if final_dir.exists():
         mp4_files = sorted([f for f in final_dir.iterdir() if f.suffix == '.mp4' and f.name != 'preview.mp4'])
         if mp4_files:
@@ -138,14 +125,13 @@ def load_project_info(project_name: str):
         except Exception:
             pass
 
-    info = f"图片: {img_count} 张 | 视频: {video_count} 个"
-    return project_name, article_text, info, latest_video, config_text
+    return article_text, info, latest_video, config_text
 
 
 def save_article(project_name: str, article_text: str):
     """保存文章"""
     if not project_name:
-        return "❌ 请先选择或创建项目"
+        return "❌ 请先选择项目"
     project_dir = PROJECTS_DIR / project_name
     article_dir = project_dir / '01_article'
     article_dir.mkdir(parents=True, exist_ok=True)
@@ -158,7 +144,7 @@ def save_article(project_name: str, article_text: str):
 def save_config(project_name: str, config_text: str):
     """保存配置"""
     if not project_name:
-        return "❌ 请先选择或创建项目"
+        return "❌ 请先选择项目"
     project_dir = PROJECTS_DIR / project_name
     try:
         config = json.loads(config_text)
@@ -172,9 +158,9 @@ def save_config(project_name: str, config_text: str):
 
 
 def upload_images(project_name: str, files):
-    """上传图片到项目"""
+    """上传图片到项目（兼容 Gradio 4.x）"""
     if not project_name:
-        return "❌ 请先选择或创建项目", ""
+        return "❌ 请先选择项目", ""
     if not files:
         return "⚠️ 未选择文件", ""
 
@@ -183,28 +169,40 @@ def upload_images(project_name: str, files):
     images_dir.mkdir(parents=True, exist_ok=True)
 
     count = 0
+    # Gradio 4.x 返回的文件对象可能有 .path 或 .name 属性
     for file in files:
         if file is None:
             continue
-        src = Path(file.name) if hasattr(file, 'name') else Path(file)
-        if src.exists():
-            dest = images_dir / src.name
-            import shutil
-            shutil.copy(str(src), str(dest))
+        src_path = None
+        # Gradio 4.x: FileData 对象
+        if hasattr(file, 'path'):
+            src_path = Path(file.path)
+        elif hasattr(file, 'name'):
+            src_path = Path(file.name)
+        elif isinstance(file, str):
+            src_path = Path(file)
+        elif hasattr(file, '__fspath__'):
+            src_path = Path(file)
+
+        if src_path and src_path.exists():
+            dest = images_dir / src_path.name
+            shutil.copy(str(src_path), str(dest))
             count += 1
 
-    info = f"图片: {len([f for f in images_dir.iterdir() if f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif']])} 张"
+    total = len([f for f in images_dir.iterdir() if f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif']])
+    info = f"图片: {total} 张"
     return f"✅ 已上传 {count} 张图片", info
 
 
 def create_project_ui(project_name: str, template: str):
     """创建新项目"""
-    if not project_name.strip():
-        return "❌ 项目名称不能为空", gr.update(choices=list_projects()), "", "", "", ""
+    if not project_name or not str(project_name).strip():
+        return "❌ 项目名称不能为空", gr.update(choices=list_projects()), "", "", None, ""
 
-    project_dir = PROJECTS_DIR / project_name.strip()
+    name = str(project_name).strip()
+    project_dir = PROJECTS_DIR / name
     if project_dir.exists() and any(project_dir.iterdir()):
-        return f"⚠️ 项目 {project_name} 已存在", gr.update(choices=list_projects()), "", "", "", ""
+        return f"⚠️ 项目 {name} 已存在", gr.update(choices=list_projects()), "", "", None, ""
 
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / '01_article').mkdir(exist_ok=True)
@@ -227,64 +225,37 @@ def create_project_ui(project_name: str, template: str):
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-    # 初始化文章模板
     article_path = project_dir / '01_article' / '文章.md'
     with open(article_path, 'w', encoding='utf-8') as f:
-        f.write(f"# {project_name}\n\n")
+        f.write(f"# {name}\n\n")
         f.write("@全局:女声\n@默认图: 01\n\n")
         f.write("第一段文案内容...\n\n")
         f.write("第二段文案内容...\n")
 
     projects = list_projects()
-    return f"✅ 项目 {project_name} 创建成功", gr.update(choices=projects, value=project_name), "", "", "", ""
-
-
-def generate_video_task(project_name: str, extra_args: str, log_box):
-    """在后台线程中运行视频生成"""
-    if not project_name:
-        return "❌ 请先选择项目"
-
-    project_dir = PROJECTS_DIR / project_name
-
-    cmd = [sys.executable, str(SCRIPT_PATH), '-p', str(project_dir)]
-    if extra_args.strip():
-        cmd.extend(extra_args.strip().split())
-
-    log_text = ""
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
-        for line in proc.stdout:
-            log_text += line
-            # 通过全局变量传递（gradio 实时更新需要 yield）
-        proc.wait()
-        if proc.returncode == 0:
-            log_text += "\n✅ 生成完成"
-        else:
-            log_text += "\n❌ 生成失败"
-    except Exception as e:
-        log_text += f"\n❌ 异常: {e}"
-
-    return log_text
+    config_text = json.dumps(config, ensure_ascii=False, indent=2)
+    return f"✅ 项目 {name} 创建成功", gr.update(choices=projects, value=name), "", "", None, config_text
 
 
 def generate_video_stream(project_name: str, extra_args: str):
-    """生成视频，实时 yield 日志（Gradio 支持 generator）"""
-    if not project_name:
+    """生成视频，实时 yield 日志"""
+    if not project_name or not str(project_name).strip():
         yield "❌ 请先选择项目"
         return
 
     project_dir = PROJECTS_DIR / project_name
-    cmd = [sys.executable, str(SCRIPT_PATH), '-p', str(project_dir)]
-    if extra_args.strip():
-        cmd.extend(extra_args.strip().split())
+    if not project_dir.exists():
+        yield f"❌ 项目不存在: {project_name}"
+        return
 
-    log_text = ""
+    cmd = [sys.executable, str(SCRIPT_PATH), '-p', str(project_dir)]
+    extra = str(extra_args).strip() if extra_args else ""
+    if extra:
+        cmd.extend(extra.split())
+
+    log_text = f"🚀 开始生成视频...\n命令: {' '.join(cmd)}\n{'─'*50}\n"
+    yield log_text
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -293,14 +264,18 @@ def generate_video_stream(project_name: str, extra_args: str):
             text=True,
             bufsize=1
         )
+        last_yield_time = time.time()
         for line in proc.stdout:
             log_text += line
-            yield log_text
+            now = time.time()
+            if now - last_yield_time >= 0.5:
+                yield log_text
+                last_yield_time = now
         proc.wait()
         if proc.returncode == 0:
             log_text += "\n✅ 生成完成"
         else:
-            log_text += "\n❌ 生成失败"
+            log_text += f"\n❌ 生成失败 (exit code: {proc.returncode})"
     except Exception as e:
         log_text += f"\n❌ 异常: {e}"
 
@@ -319,23 +294,26 @@ def get_latest_video_path(project_name: str):
 
 
 def build_ui():
-    """构建 Gradio UI"""
-    with gr.Blocks(title="视频生成器 Pro", css="""
-        .gradio-container { max-width: 1200px; }
-        #log-box { font-family: monospace; font-size: 13px; }
-    """) as demo:
+    """构建 Gradio 4.x UI"""
+    with gr.Blocks(title="视频生成器 Pro") as demo:
         gr.Markdown("# 🎬 视频生成器 Pro - Web UI")
         gr.Markdown("可视化配置，一键生成视频")
 
+        # 状态变量（用于跨组件传递）
+        current_project = gr.State("")
+
         with gr.Row():
+            # 左侧：项目管理和素材
             with gr.Column(scale=1):
-                # 左侧：项目管理
                 gr.Markdown("## 📁 项目管理")
+
                 project_dropdown = gr.Dropdown(
                     choices=list_projects(),
                     label="选择项目",
-                    value=None
+                    value=None,
+                    allow_custom_value=False
                 )
+
                 with gr.Row():
                     refresh_btn = gr.Button("🔄 刷新")
                     load_btn = gr.Button("📂 加载", variant="primary")
@@ -348,40 +326,42 @@ def build_ui():
                     label="模板"
                 )
                 create_btn = gr.Button("创建项目", variant="secondary")
-                create_status = gr.Textbox(label="状态", interactive=False)
+                create_status = gr.Textbox(label="状态", interactive=False, show_copy_button=False)
 
                 # 项目信息
-                project_info = gr.Textbox(label="项目信息", interactive=False)
+                project_info = gr.Textbox(label="项目信息", interactive=False, show_copy_button=False)
 
+                # 素材上传
+                gr.Markdown("---\n### 🖼️ 上传图片")
+                image_uploader = gr.File(
+                    label="选择图片（支持多选）",
+                    file_count="multiple",
+                    file_types=["image"]
+                )
+                upload_btn = gr.Button("📤 上传")
+                upload_status = gr.Textbox(label="上传状态", interactive=False, show_copy_button=False)
+
+            # 右侧：编辑、配置、生成、预览
             with gr.Column(scale=2):
-                # 右侧：编辑和生成
                 with gr.Tabs():
-                    with gr.TabItem("📝 文章"):
+                    with gr.Tab("📝 文章"):
                         article_editor = gr.Textbox(
                             label="文章文案",
                             lines=20,
                             placeholder="# 标题\n\n@全局:女声\n@默认图: 01\n\n第一段内容...\n\n第二段内容..."
                         )
                         save_article_btn = gr.Button("💾 保存文章", variant="primary")
-                        article_status = gr.Textbox(label="状态", interactive=False)
+                        article_status = gr.Textbox(label="状态", interactive=False, show_copy_button=False)
 
-                    with gr.TabItem("🖼️ 图片"):
-                        image_uploader = gr.File(
-                            label="上传图片（支持多选）",
-                            file_count="multiple",
-                            file_types=["image"]
-                        )
-                        upload_btn = gr.Button("📤 上传")
-                        upload_status = gr.Textbox(label="状态", interactive=False)
-
-                    with gr.TabItem("⚙️ 配置"):
-                        config_editor = gr.Textbox(
+                    with gr.Tab("⚙️ 配置"):
+                        config_editor = gr.Code(
                             label="项目配置 (.video_config.json)",
-                            lines=25,
+                            language="json",
+                            lines=20,
                             value=json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2)
                         )
                         save_config_btn = gr.Button("💾 保存配置", variant="primary")
-                        config_status = gr.Textbox(label="状态", interactive=False)
+                        config_status = gr.Textbox(label="状态", interactive=False, show_copy_button=False)
 
                         gr.Markdown("### 快速参数")
                         with gr.Row():
@@ -389,7 +369,7 @@ def build_ui():
                             quick_style = gr.Dropdown(SUBTITLE_STYLES, value='news', label="字幕样式")
                             quick_transition = gr.Dropdown(TRANSITIONS, value='fade', label="转场")
 
-                    with gr.TabItem("🚀 生成"):
+                    with gr.Tab("🚀 生成"):
                         extra_args = gr.Textbox(
                             label="额外命令行参数（可选）",
                             placeholder="例如: --intro-text '欢迎' --outro-text '再见' --normalize-audio",
@@ -398,62 +378,67 @@ def build_ui():
                         generate_btn = gr.Button("🎬 开始生成", variant="primary")
                         log_output = gr.Textbox(
                             label="生成日志",
-                            lines=30,
+                            lines=25,
                             interactive=False,
-                            elem_id="log-box"
+                            show_copy_button=True,
+                            autoscroll=True
                         )
 
-                    with gr.TabItem("🎞️ 预览"):
-                        video_player = gr.Video(label="最新视频")
+                    with gr.Tab("🎞️ 预览"):
+                        video_player = gr.Video(label="最新视频", height=400)
                         refresh_video_btn = gr.Button("🔄 刷新")
 
-        # 事件绑定
-        refresh_btn.click(fn=lambda: gr.update(choices=list_projects()), outputs=project_dropdown)
+        # ========== 事件绑定 ==========
+
+        # 刷新项目列表
+        def refresh_projects():
+            return gr.update(choices=list_projects())
+
+        refresh_btn.click(fn=refresh_projects, outputs=project_dropdown)
+
+        # 加载项目
+        def on_load(project_name):
+            if not project_name:
+                return "", "未选择项目", None, ""
+            article, info, video, config = load_project_info(project_name)
+            return article, info, video, config
 
         load_btn.click(
-            fn=load_project_info,
+            fn=on_load,
             inputs=project_dropdown,
-            outputs=[new_project_name, article_editor, project_info, video_player, config_editor]
+            outputs=[article_editor, project_info, video_player, config_editor]
         )
 
+        # 创建项目
         create_btn.click(
             fn=create_project_ui,
             inputs=[new_project_name, template_select],
             outputs=[create_status, project_dropdown, article_editor, project_info, video_player, config_editor]
         )
 
+        # 保存文章
         save_article_btn.click(
             fn=save_article,
             inputs=[project_dropdown, article_editor],
             outputs=article_status
         )
 
+        # 上传图片
         upload_btn.click(
             fn=upload_images,
             inputs=[project_dropdown, image_uploader],
             outputs=[upload_status, project_info]
         )
 
+        # 保存配置
         save_config_btn.click(
             fn=save_config,
             inputs=[project_dropdown, config_editor],
             outputs=config_status
         )
 
-        generate_btn.click(
-            fn=generate_video_stream,
-            inputs=[project_dropdown, extra_args],
-            outputs=log_output
-        )
-
-        refresh_video_btn.click(
-            fn=get_latest_video_path,
-            inputs=project_dropdown,
-            outputs=video_player
-        )
-
-        # 快捷参数更新配置
-        def update_config_from_quick(config_text, res, style, transition):
+        # 快速参数联动（修改下拉框时更新 JSON 编辑器）
+        def update_config_json(config_text, res, style, transition):
             try:
                 config = json.loads(config_text)
             except Exception:
@@ -463,15 +448,34 @@ def build_ui():
             config['transition'] = transition
             return json.dumps(config, ensure_ascii=False, indent=2)
 
-        quick_res.change(fn=update_config_from_quick, inputs=[config_editor, quick_res, quick_style, quick_transition], outputs=config_editor)
-        quick_style.change(fn=update_config_from_quick, inputs=[config_editor, quick_res, quick_style, quick_transition], outputs=config_editor)
-        quick_transition.change(fn=update_config_from_quick, inputs=[config_editor, quick_res, quick_style, quick_transition], outputs=config_editor)
+        quick_res.change(fn=update_config_json, inputs=[config_editor, quick_res, quick_style, quick_transition], outputs=config_editor)
+        quick_style.change(fn=update_config_json, inputs=[config_editor, quick_res, quick_style, quick_transition], outputs=config_editor)
+        quick_transition.change(fn=update_config_json, inputs=[config_editor, quick_res, quick_style, quick_transition], outputs=config_editor)
+
+        # 生成视频
+        generate_btn.click(
+            fn=generate_video_stream,
+            inputs=[project_dropdown, extra_args],
+            outputs=log_output
+        )
+
+        # 刷新视频
+        refresh_video_btn.click(
+            fn=get_latest_video_path,
+            inputs=project_dropdown,
+            outputs=video_player
+        )
 
     return demo
 
 
 if __name__ == '__main__':
     print("🎬 启动视频生成器 Web UI...")
+    print(f"   Gradio: {gr.__version__}")
     print("   地址: http://127.0.0.1:7860")
     demo = build_ui()
-    demo.launch(server_name="0.0.0.0", server_port=7860, show_error=True)
+    demo.launch(
+        server_name="127.0.0.1",
+        server_port=7860,
+        show_error=True
+    )
