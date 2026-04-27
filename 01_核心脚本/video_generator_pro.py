@@ -984,12 +984,12 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
 
 
 def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str = None, model: str = None) -> bool:
-    """根据文章内容自动生成多平台发布文案
+    """根据文章内容自动生成多平台发布文案（默认调用 Kimi API）
 
-    支持通过环境变量配置 LLM API:
-    - OPENAI_API_KEY / KIMI_API_KEY: API 密钥
-    - LLM_BASE_URL: API 基础地址（默认 OpenAI 官方）
-    - LLM_MODEL: 模型名称（默认 gpt-4o）
+    支持通过环境变量配置:
+    - KIMI_API_KEY / OPENAI_API_KEY: API 密钥
+    - LLM_BASE_URL: API 基础地址（默认 Kimi: https://api.moonshot.cn/v1）
+    - LLM_MODEL: 模型名称（默认 moonshot-v1-8k）
     """
     import requests
 
@@ -1015,15 +1015,15 @@ def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str 
     clean_text = re.sub(r'[#*`\n\r]', ' ', clean_text)
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()[:1500]
 
-    # 获取 API 配置
-    api_key = api_key or os.environ.get('OPENAI_API_KEY') or os.environ.get('KIMI_API_KEY') or os.environ.get('ANTHROPIC_API_KEY')
-    base_url = base_url or os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
-    model = model or os.environ.get('LLM_MODEL', 'gpt-4o')
+    # 获取 API 配置（默认 Kimi）
+    api_key = api_key or os.environ.get('KIMI_API_KEY') or os.environ.get('OPENAI_API_KEY')
+    base_url = base_url or os.environ.get('LLM_BASE_URL', 'https://api.moonshot.cn/v1')
+    model = model or os.environ.get('LLM_MODEL', 'moonshot-v1-8k')
 
     if not api_key:
-        print("\n⚠️  未配置 LLM API 密钥")
-        print("   请设置环境变量: export OPENAI_API_KEY='sk-...'")
-        print("   或: export KIMI_API_KEY='sk-...'")
+        print("\n⚠️  未配置 Kimi API 密钥")
+        print("   请设置环境变量: export KIMI_API_KEY='sk-...'")
+        print("   或: export OPENAI_API_KEY='sk-...'")
         print("   也可通过 --llm-api-key 参数传入")
         return False
 
@@ -3390,8 +3390,8 @@ AI配音音色 (--voice):
     parser.add_argument('--generate-copy', action='store_true',
                        help='根据文章内容自动生成多平台发布文案（需配置 LLM API）')
     parser.add_argument('--llm-api-key', help='LLM API 密钥（也可通过 OPENAI_API_KEY/KIMI_API_KEY 环境变量设置）')
-    parser.add_argument('--llm-base-url', help='LLM API 基础地址（默认: https://api.openai.com/v1）')
-    parser.add_argument('--llm-model', help='LLM 模型名称（默认: gpt-4o）')
+    parser.add_argument('--llm-base-url', help='LLM API 基础地址（默认: https://api.moonshot.cn/v1）')
+    parser.add_argument('--llm-model', help='LLM 模型名称（默认: moonshot-v1-8k）')
     parser.add_argument('--import-ppt', metavar='PATH',
                        help='导入PPT/Keynote：提取图片和备注文本生成新项目')
     parser.add_argument('--queue', nargs='+', metavar='PATH',
