@@ -2925,7 +2925,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
 
     if project_dir.exists() and any(project_dir.iterdir()):
         print(f"\n⚠️  目录已存在且不为空: {project_dir}")
-        confirm = input("是否继续初始化? [y/N]: ").strip().lower()
+        confirm = input("是否继续初始化? [y/N]: ").strip().replace('\r', '').lower()
         if confirm != 'y':
             print("已取消")
             return False
@@ -3584,9 +3584,9 @@ AI配音音色 (--voice):
         if args.project:
             project_dir = Path(args.project)
         else:
-            project_dir = Path(input("请输入项目路径: ").strip())
+            project_dir = Path(input("请输入项目路径: ").strip().replace('\r', ''))
         if init_project_wizard(project_dir, template=args.template):
-            if input("\n是否立即检查素材? [y/N]: ").strip().lower() == 'y':
+            if input("\n是否立即检查素材? [y/N]: ").strip().replace('\r', '').lower() == 'y':
                 check_project_materials(project_dir)
         sys.exit(0)
 
