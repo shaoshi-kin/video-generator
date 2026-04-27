@@ -1745,17 +1745,50 @@ def add_intro_outro(
 
 
 def add_bgm(video: Path, bgm: Path, output: Path, volume: float = 0.3) -> bool:
-    """添加背景音乐"""
+    """添加背景音乐（智能裁剪循环 + 淡入淡出）
 
-    duration = get_media_duration(str(video))
+    - BGM 比视频短：循环播放，循环衔接处做淡入淡出，结尾淡出让位
+    - BGM 比视频长：裁剪到视频时长，结尾淡出让位
+    """
+
+    video_dur = get_media_duration(str(video))
+    bgm_dur = get_media_duration(str(bgm))
+
+    # 淡入淡出时长
+    fade_in = min(2.0, bgm_dur * 0.2)
+    fade_out = min(3.0, video_dur * 0.15)
+
+    if bgm_dur < video_dur:
+        # BGM 比视频短：循环播放 + 淡入淡出衔接
+        loops = int(video_dur / bgm_dur) + 1
+        # 对 BGM 做淡入淡出处理，循环后在视频结尾处整体淡出
+        bgm_filter = (
+            f"[1:a]volume={volume},"
+            f"afade=t=in:st=0:d={fade_in},"
+            f"afade=t=out:st={max(0,bgm_dur-fade_in)}:d={fade_in},"
+            f"aloop=loop={loops}:size={int(bgm_dur*48000)},"
+            f"atrim=0:{video_dur},"
+            f"afade=t=out:st={max(0,video_dur-fade_out)}:d={fade_out}[bgm]"
+        )
+        print(f"   🎵 BGM 循环: {bgm_dur:.1f}s → {video_dur:.1f}s ({loops}次, 淡入{fade_in:.1f}s/淡出{fade_out:.1f}s)")
+    else:
+        # BGM 比视频长：裁剪 + 淡出让位
+        bgm_filter = (
+            f"[1:a]volume={volume},"
+            f"afade=t=in:st=0:d={fade_in},"
+            f"atrim=0:{video_dur},"
+            f"afade=t=out:st={max(0,video_dur-fade_out)}:d={fade_out}[bgm]"
+        )
+        print(f"   🎵 BGM 裁剪: {bgm_dur:.1f}s → {video_dur:.1f}s (淡入{fade_in:.1f}s/淡出{fade_out:.1f}s)")
+
+    mix_filter = "[0:a][bgm]amix=inputs=2:duration=first[a]"
 
     cmd = [
         'ffmpeg', '-y',
         '-i', str(video),
-        '-stream_loop', '-1',
         '-i', str(bgm),
         '-filter_complex',
-        f"[0:a]volume=1.0[va];[1:a]volume={volume},atrim=0:{duration}[bgm];[va][bgm]amix=inputs=2:duration=first[a]",
+        f"{bgm_filter};{mix_filter}",
         '-map', '0:v', '-map', '[a]',
         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
         str(output)
@@ -2185,6 +2218,18 @@ def process_project(
         pending_tasks = []
         width, height = map(int, args.resolution.split('x'))
 
+        # 预览模式：降低分辨率加速出片
+        if preview_mode:
+            orig_res = f"{width}x{height}"
+            preview_width = 480
+            scale = preview_width / width
+            width = preview_width
+            height = int(height * scale)
+            # 确保高度为偶数（H.264 要求）
+            if height % 2 != 0:
+                height += 1
+            print(f"   预览分辨率: {width}x{height} (原 {orig_res})")
+
         # 加载构建清单（增量更新）
         build_manifest = load_build_manifest(scenes_dir) if not preview_mode else {}
         new_manifest = {}
@@ -2359,7 +2404,25 @@ def process_project(
         # 预览模式：直接复制第一个场景，跳过合并/转场/片头片尾/BGM
         if preview_mode:
             main_video = scene_videos[0]
-            shutil.copy(str(main_video), str(output_path))
+            preview_duration = getattr(args, 'preview_duration', 5.0)
+            video_dur = get_media_duration(str(main_video))
+
+            if video_dur > preview_duration:
+                # 裁剪到预览时长
+                print(f"   ✂️  裁剪到 {preview_duration}s (原 {video_dur:.1f}s)")
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', str(main_video),
+                    '-t', str(preview_duration),
+                    '-c', 'copy',
+                    str(output_path)
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    shutil.copy(str(main_video), str(output_path))
+            else:
+                shutil.copy(str(main_video), str(output_path))
+
             final_duration = get_media_duration(str(output_path))
             final_size = output_path.stat().st_size / (1024 * 1024)
 
@@ -3414,7 +3477,9 @@ AI配音音色 (--voice):
     parser.add_argument('--no-parallel', action='store_true',
                        help='关闭并行生成（默认开启，最多3并发）')
     parser.add_argument('--preview', action='store_true',
-                       help='预览模式：只生成第一个场景，快速验证效果')
+                       help='预览模式：只生成第一个场景，低分辨率快速验证效果')
+    parser.add_argument('--preview-duration', type=float, default=5.0,
+                       help='预览模式限制单场景时长（默认5秒）')
     parser.add_argument('--skip-pre-check', action='store_true',
                        help='跳过素材预检（默认执行预检）')
     parser.add_argument('--regenerate-audio', action='store_true',
@@ -3448,6 +3513,8 @@ AI配音音色 (--voice):
                        help='字幕显示模式: full(整段显示) / sentence(逐句显示) (默认: sentence)')
     parser.add_argument('--dual-version', action='store_true',
                        help='同时生成横竖双版本（如当前为横屏则额外生成竖屏，反之亦然）')
+    parser.add_argument('--batch-variants-dir', metavar='PATH',
+                       help='批量模板生成：扫描目录下的子目录作为素材变体，每套素材+模板文章生成一个视频（矩阵号）')
 
     args = parser.parse_args()
 
@@ -3475,6 +3542,122 @@ AI配音音色 (--voice):
         else:
             project_dir = Path('projects') / ppt_path.stem
         import_ppt_project(ppt_path, project_dir)
+        sys.exit(0)
+
+    # 批量模板生成（矩阵号）
+    if args.batch_variants_dir:
+        variants_dir = Path(args.batch_variants_dir)
+        if not variants_dir.exists() or not variants_dir.is_dir():
+            print(f"❌ 变体目录不存在: {variants_dir}")
+            sys.exit(1)
+
+        template_dir = Path(args.project) if args.project else Path('.')
+        if not template_dir.exists():
+            print(f"❌ 模板项目不存在，请用 -p 指定")
+            sys.exit(1)
+
+        # 扫描变体目录
+        variant_dirs = sorted([d for d in variants_dir.iterdir() if d.is_dir()])
+        if not variant_dirs:
+            print(f"❌ 变体目录下没有找到子目录: {variants_dir}")
+            sys.exit(1)
+
+        print(f"\n{'='*60}")
+        print(f"🔄 批量模板生成: {template_dir.name}")
+        print(f"   模板项目: {template_dir}")
+        print(f"   变体目录: {variants_dir}")
+        print(f"   发现 {len(variant_dirs)} 套素材")
+        print(f"{'='*60}")
+
+        batch_start = time.time()
+        results = []
+        success_count = 0
+        fail_count = 0
+
+        for i, variant in enumerate(variant_dirs, 1):
+            print(f"\n📌 [{i}/{len(variant_dirs)}] 变体: {variant.name}")
+            print(f"{'─'*60}")
+
+            # 创建临时项目
+            temp_dir = Path(tempfile.mkdtemp(prefix=f"batch_{template_dir.name}_"))
+            try:
+                # 复制模板结构
+                for subdir in ['01_article', '02_bgm', '02_sfx', '03_images', '04_videos']:
+                    src = template_dir / subdir
+                    dst = temp_dir / subdir
+                    if src.exists():
+                        if subdir == '03_images' or subdir == '02_bgm':
+                            # 图片和BGM从变体复制
+                            variant_src = variant / subdir
+                            if variant_src.exists():
+                                shutil.copytree(variant_src, dst)
+                            elif src.exists():
+                                shutil.copytree(src, dst)
+                        else:
+                            shutil.copytree(src, dst)
+
+                # 复制配置文件
+                config_src = template_dir / '.video_config.json'
+                if config_src.exists():
+                    shutil.copy(config_src, temp_dir / '.video_config.json')
+
+                # 复制水印
+                wm_src = template_dir / 'watermark.png'
+                if wm_src.exists():
+                    shutil.copy(wm_src, temp_dir / 'watermark.png')
+
+                # 清理旧音频和场景（强制重新生成，因为图片变了）
+                for d in ['05_audio', '06_scenes']:
+                    old = temp_dir / d
+                    if old.exists():
+                        shutil.rmtree(old)
+
+                # 加载配置并生成
+                merge_project_config(args, temp_dir)
+                result = process_project(temp_dir, args)
+
+                if result:
+                    # 复制最终视频到模板项目的 07_final/ 下，带变体名
+                    final_dir = template_dir / '07_final'
+                    final_dir.mkdir(exist_ok=True)
+                    dest_name = f"{template_dir.name}_{variant.name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+                    dest_path = final_dir / dest_name
+                    shutil.copy(str(result), str(dest_path))
+                    print(f"   ✅ 已保存: {dest_path.name}")
+                    results.append((variant.name, True, str(dest_path)))
+                    success_count += 1
+                else:
+                    results.append((variant.name, False, None))
+                    fail_count += 1
+
+            except Exception as e:
+                print(f"\n❌ 变体异常: {e}")
+                traceback.print_exc()
+                results.append((variant.name, False, None))
+                fail_count += 1
+            finally:
+                # 清理临时目录
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir)
+
+        batch_total = time.time() - batch_start
+
+        # 汇总报告
+        print(f"\n{'='*60}")
+        print(f"📊 批量模板生成完成报告")
+        print(f"{'='*60}")
+        print(f"  📁 总变体: {len(variant_dirs)} 个")
+        print(f"  ✅ 成功:   {success_count} 个")
+        print(f"  ❌ 失败:   {fail_count} 个")
+        print(f"  ⏱️  总耗时:  {batch_total:.1f}s")
+        if success_count > 0:
+            print(f"  ⏱️  平均耗时: {batch_total / success_count:.1f}s/变体")
+        print(f"\n  📋 明细:")
+        for name, ok, path in results:
+            status = "✅" if ok else "❌"
+            detail = f" → {Path(path).name}" if ok else ""
+            print(f"    {status} {name}{detail}")
+        print(f"{'='*60}")
         sys.exit(0)
 
     # 批量处理 / 队列处理
