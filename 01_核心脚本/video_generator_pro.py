@@ -572,12 +572,22 @@ def generate_text_video(
 
 
 def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_size: str = 'small') -> bool:
-    """使用本地 faster-whisper 识别视频语音，生成文章"""
+    """使用本地 faster-whisper 识别视频语音，生成文章
+
+    首次使用会自动从 HuggingFace Hub 下载模型（约 244MB，small 模型）。
+    国内网络不稳定时可设置镜像：
+        export HF_ENDPOINT=https://hf-mirror.com
+    """
     try:
         from faster_whisper import WhisperModel
     except ImportError:
         print("   ❌ 未安装 faster-whisper，请运行: pip install faster-whisper")
         return False
+
+    # 国内用户自动使用 hf-mirror 镜像（如果未手动设置）
+    if not os.environ.get('HF_ENDPOINT') and not os.environ.get('HF_HUB_OFFLINE'):
+        # 简单检测：如果默认 huggingface.co 访问不通，切换到镜像
+        os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 
     print(f"   🎙️  语音识别中... (模型: {model_size})")
     try:
@@ -606,8 +616,16 @@ def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_
         print(f"   📝 文章已保存: {output_article.name}")
         return True
     except Exception as e:
-        print(f"   ❌ 语音识别失败: {e}")
-        traceback.print_exc()
+        err_msg = str(e)
+        if 'ConnectError' in err_msg or 'SSL' in err_msg or 'huggingface' in err_msg.lower():
+            print("   ❌ 模型下载失败: 网络连接异常（HuggingFace 访问受限）")
+            print("   💡 解决方案（三选一）:")
+            print("      1. 设置镜像后重试: export HF_ENDPOINT=https://hf-mirror.com")
+            print("      2. 手动下载模型放到 ~/.cache/huggingface/hub/")
+            print("      3. 使用离线模式（已下载过模型）: export HF_HUB_OFFLINE=1")
+        else:
+            print(f"   ❌ 语音识别失败: {e}")
+            traceback.print_exc()
         return False
 
 
