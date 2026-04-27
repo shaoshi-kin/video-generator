@@ -291,16 +291,33 @@ def setup_logging(project_dir: Path, preview_mode: bool = False) -> Optional[Tee
     return tee
 
 
+# ffprobe 时长缓存（避免重复调用）
+_DURATION_CACHE: Dict[str, float] = {}
+
+
 def get_media_duration(path: str) -> float:
-    """获取媒体时长（秒）"""
+    """获取媒体时长（秒），带缓存"""
+    # 使用路径+修改时间作为缓存键，文件变更自动失效
+    try:
+        mtime = str(os.path.getmtime(path))
+    except OSError:
+        mtime = '0'
+    cache_key = f"{path}:{mtime}"
+
+    if cache_key in _DURATION_CACHE:
+        return _DURATION_CACHE[cache_key]
+
     cmd = [
         'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1', path
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     try:
-        return float(result.stdout.strip())
+        duration = float(result.stdout.strip())
+        _DURATION_CACHE[cache_key] = duration
+        return duration
     except:
+        _DURATION_CACHE[cache_key] = 0.0
         return 0.0
 
 
@@ -629,6 +646,18 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
 
     try:
         segments_info = []
+        semaphore = asyncio.Semaphore(3)
+
+        async def _gen_one(i, voice_key, content, img_ref, output_path, label='场景'):
+            """单个音频生成，受 semaphore 限流"""
+            async with semaphore:
+                voice_id = VOICE_MAP.get(voice_key, VOICE_MAP.get(voice, 'zh-CN-XiaoxiaoNeural'))
+                success = await generate_tts_with_retry(content, voice_id, output_path, rate)
+                if success:
+                    segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'text': content, 'index': i})
+                    img_info = f" [图:{img_ref}]" if img_ref else ""
+                    print(f"      ✓ {label} {i}: [{voice_key}]{img_info} {content[:25]}...")
+                return success
 
         if video_mode:
             # 视频模式：合并所有段落，但按音色分段生成后合并
@@ -645,21 +674,21 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
                 else:
                     return False, []
             else:
-                # 多音色，分别生成后合并
+                # 多音色，并行生成临时文件
                 temp_files = []
+                tasks = []
                 for i, (voice_key, content, img_ref) in enumerate(segments, 1):
-                    voice_id = VOICE_MAP.get(voice_key, VOICE_MAP.get(voice, 'zh-CN-XiaoxiaoNeural'))
                     temp_path = output_dir / f"_temp_{i:02d}.mp3"
-                    if await generate_tts_with_retry(content, voice_id, temp_path, rate):
-                        temp_files.append(temp_path)
-                        segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'text': content, 'index': i})
-                        print(f"      ✓ 段落 {i}: {voice_key} - {content[:25]}...")
-                    else:
-                        # 清理已生成的临时文件
-                        for tf in temp_files:
-                            if tf.exists():
-                                tf.unlink()
-                        return False, []
+                    temp_files.append(temp_path)
+                    tasks.append(_gen_one(i, voice_key, content, img_ref, temp_path, label='段落'))
+
+                results = await asyncio.gather(*tasks)
+                if not all(results):
+                    # 清理已生成的临时文件
+                    for tf in temp_files:
+                        if tf.exists():
+                            tf.unlink()
+                    return False, []
 
                 # 合并音频
                 output_path = output_dir / "scene_01.mp3"
@@ -686,21 +715,19 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
 
             return True, segments_info
         else:
-            # 图片模式：每个段落生成一个音频文件
-            audio_files = []
+            # 图片模式：并行生成每个段落音频
+            print(f"   🚀 并行生成 {len(segments)} 段音频（最多3并发）...")
+            tasks = []
             for i, (voice_key, content, img_ref) in enumerate(segments, 1):
-                voice_id = VOICE_MAP.get(voice_key, VOICE_MAP.get(voice, 'zh-CN-XiaoxiaoNeural'))
                 output_path = output_dir / f"scene_{i:02d}.mp3"
-                if await generate_tts_with_retry(content, voice_id, output_path, rate):
-                    audio_files.append(output_path)
-                    segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'index': i})
-                    img_info = f" [图:{img_ref}]" if img_ref else ""
-                    print(f"      ✓ 场景 {i}: [{voice_key}]{img_info} {content[:25]}...")
-                else:
-                    return False, []
+                tasks.append(_gen_one(i, voice_key, content, img_ref, output_path))
 
-            print(f"   ✅ 音频生成完成: {len(audio_files)} 个场景")
-            return len(audio_files) > 0, segments_info
+            results = await asyncio.gather(*tasks)
+            if not all(results):
+                return False, []
+
+            print(f"   ✅ 音频生成完成: {len(segments)} 个场景")
+            return True, segments_info
     except Exception as e:
         print(f"   ❌ 音频生成失败: {e}")
         traceback.print_exc()
@@ -1484,9 +1511,9 @@ def process_project(
         # 执行生成（支持并行）
         total_pending = len(pending_tasks)
         scene_t0 = time.time()
-        if args.parallel and total_pending > 1 and not preview_mode:
-            print(f"\n🚀 并行生成 {total_pending} 个场景...")
-            with concurrent.futures.ProcessPoolExecutor() as executor:
+        if not args.no_parallel and total_pending > 1 and not preview_mode:
+            print(f"\n🚀 并行生成 {total_pending} 个场景（最多3并发）...")
+            with concurrent.futures.ProcessPoolExecutor(max_workers=3) as executor:
                 futures = [executor.submit(_generate_scene_worker, task) for task in pending_tasks]
                 for future in concurrent.futures.as_completed(futures):
                     result = future.result()
@@ -2380,8 +2407,8 @@ AI配音音色 (--voice):
                        help='使用预设模板初始化 (news/food/tutorial/education)')
     parser.add_argument('--check', action='store_true',
                        help='只检查素材，不生成视频')
-    parser.add_argument('--parallel', action='store_true',
-                       help='并行生成场景（速度更快）')
+    parser.add_argument('--no-parallel', action='store_true',
+                       help='关闭并行生成（默认开启，最多3并发）')
     parser.add_argument('--preview', action='store_true',
                        help='预览模式：只生成第一个场景，快速验证效果')
     parser.add_argument('--regenerate-audio', action='store_true',
