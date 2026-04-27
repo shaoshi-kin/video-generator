@@ -485,14 +485,18 @@ def build_sentence_subtitle_filter(
     current_time = 0.0
     y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
 
-    for sentence in items:
+    for idx, sentence in enumerate(items):
         # 转义单引号和反斜杠，避免 ffmpeg filter 解析出错
         sentence = sentence.replace("\\", "\\\\").replace("'", "'\\''")
         sent_chars = len(sentence)
         sent_duration = max(sent_chars * char_time, 1.0)  # 最少1秒
 
         start_t = current_time
-        end_t = min(current_time + sent_duration + 0.3, total_duration)  # +0.3s缓冲
+        # 非最后一句：严格在下一句开始前消失，避免重影；最后一句保留到视频结束
+        if idx == len(items) - 1:
+            end_t = total_duration
+        else:
+            end_t = min(current_time + sent_duration, total_duration)
 
         # 构建单句 drawtext，带 enable 时间窗口
         ft = (
@@ -2252,6 +2256,7 @@ def process_project(
         if not args.no_parallel and total_pending > 1 and not preview_mode:
             print(f"\n🚀 并行生成 {total_pending} 个场景（最多3并发）...")
             pbar = tqdm(total=total_pending, desc="场景生成", unit="个", file=sys.stdout) if tqdm else None
+            _parallel_results = []
             with concurrent.futures.ProcessPoolExecutor(max_workers=3) as executor:
                 futures = [executor.submit(_generate_scene_worker, task) for task in pending_tasks]
                 for future in concurrent.futures.as_completed(futures):
@@ -2259,19 +2264,22 @@ def process_project(
                     idx = result['index']
                     media = result.get('media_name') or '无素材'
                     if result['success']:
-                        scene_videos.append(result['output'])
+                        _parallel_results.append(result)
                         if pbar:
                             pbar.update(1)
                         else:
-                            print(f"   ✅ [{len(scene_videos)}/{total_pending}] 场景 {idx:02d} ({media}) 完成 ({result['duration']:.1f}s)")
+                            print(f"   ✅ [{len(_parallel_results)}/{total_pending}] 场景 {idx:02d} ({media}) 完成 ({result['duration']:.1f}s)")
                     else:
                         failed_scenes.append(idx)
                         if pbar:
                             pbar.update(1)
                         else:
-                            print(f"   ❌ [{len(scene_videos)+1}/{total_pending}] 场景 {idx:02d} ({media}) 失败: {result['error'] or '未知错误'}")
+                            print(f"   ❌ [{len(_parallel_results)+1}/{total_pending}] 场景 {idx:02d} ({media}) 失败: {result['error'] or '未知错误'}")
             if pbar:
                 pbar.close()
+            # 按场景 index 排序后再取输出，确保合并顺序正确
+            _parallel_results.sort(key=lambda r: r['index'])
+            scene_videos = [r['output'] for r in _parallel_results]
         else:
             # 顺序生成（预览模式也用顺序）
             pbar = tqdm(total=total_pending, desc="场景生成", unit="个", file=sys.stdout) if tqdm else None
