@@ -586,12 +586,28 @@ def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_
 
     # 国内用户自动使用 hf-mirror 镜像（如果未手动设置）
     if not os.environ.get('HF_ENDPOINT') and not os.environ.get('HF_HUB_OFFLINE'):
-        # 简单检测：如果默认 huggingface.co 访问不通，切换到镜像
         os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 
-    print(f"   🎙️  语音识别中... (模型: {model_size})")
     try:
-        # CPU 运行，small 模型约 244MB，首次使用自动下载
+        from faster_whisper.utils import download_model
+        # 先下载/检查模型，避免边下载边识别导致体验差
+        print(f"   📦 检查模型... (模型: {model_size})")
+        model_path = download_model(model_size)
+        print(f"   ✅ 模型就绪: {model_path}")
+    except Exception as e:
+        err_msg = str(e)
+        if 'ConnectError' in err_msg or 'SSL' in err_msg or 'huggingface' in err_msg.lower():
+            print("   ❌ 模型下载失败: 网络连接异常（HuggingFace 访问受限）")
+            print("   💡 解决方案（三选一）:")
+            print("      1. 设置镜像后重试: export HF_ENDPOINT=https://hf-mirror.com")
+            print("      2. 手动下载模型放到 ~/.cache/huggingface/hub/")
+            print("      3. 使用离线模式（已下载过模型）: export HF_HUB_OFFLINE=1")
+        else:
+            print(f"   ❌ 模型下载失败: {e}")
+        return False
+
+    print(f"   🎙️  开始语音识别...")
+    try:
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
         segments, info = model.transcribe(str(video_path), language="zh", beam_size=5)
 
@@ -616,16 +632,8 @@ def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_
         print(f"   📝 文章已保存: {output_article.name}")
         return True
     except Exception as e:
-        err_msg = str(e)
-        if 'ConnectError' in err_msg or 'SSL' in err_msg or 'huggingface' in err_msg.lower():
-            print("   ❌ 模型下载失败: 网络连接异常（HuggingFace 访问受限）")
-            print("   💡 解决方案（三选一）:")
-            print("      1. 设置镜像后重试: export HF_ENDPOINT=https://hf-mirror.com")
-            print("      2. 手动下载模型放到 ~/.cache/huggingface/hub/")
-            print("      3. 使用离线模式（已下载过模型）: export HF_HUB_OFFLINE=1")
-        else:
-            print(f"   ❌ 语音识别失败: {e}")
-            traceback.print_exc()
+        print(f"   ❌ 语音识别失败: {e}")
+        traceback.print_exc()
         return False
 
 
