@@ -566,6 +566,46 @@ def generate_text_video(
         return False
 
 
+def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_size: str = 'base') -> bool:
+    """使用本地 faster-whisper 识别视频语音，生成文章"""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        print("   ❌ 未安装 faster-whisper，请运行: pip install faster-whisper")
+        return False
+
+    print(f"   🎙️  语音识别中... (模型: {model_size})")
+    try:
+        # CPU 运行，base 模型约 74MB，首次使用自动下载
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        segments, info = model.transcribe(str(video_path), language="zh", beam_size=5)
+
+        print(f"   检测语言: {info.language} (概率: {info.language_probability:.2f})")
+
+        # 收集所有文本
+        texts = []
+        for segment in segments:
+            texts.append(segment.text.strip())
+
+        full_text = '\n\n'.join(texts)
+
+        # 保存文章
+        output_article.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_article, 'w', encoding='utf-8') as f:
+            f.write(f"# {video_path.stem}\n\n")
+            f.write("@全局:女声\n\n")
+            f.write(full_text)
+            f.write("\n")
+
+        print(f"   ✅ 语音识别完成: {len(texts)} 段, {len(full_text)} 字")
+        print(f"   📝 文章已保存: {output_article.name}")
+        return True
+    except Exception as e:
+        print(f"   ❌ 语音识别失败: {e}")
+        traceback.print_exc()
+        return False
+
+
 def build_fade_filter(duration: float, fade_duration: float) -> str:
     """构建淡入淡出滤镜"""
     if fade_duration <= 0 or duration <= fade_duration * 2:
@@ -2147,6 +2187,20 @@ def process_project(
                 output_name = f"{project_dir.name}_{now}.mp4"
             output_path = final_dir / output_name
 
+        # 语音识别：视频模式下，用 faster-whisper 识别语音生成文章
+        if getattr(args, 'whisper_transcribe', False):
+            videos_dir = project_dir / '04_videos'
+            article_dir = project_dir / '01_article'
+            if videos_dir.exists() and any(videos_dir.iterdir()):
+                video_files = sorted([f for f in videos_dir.iterdir()
+                                    if f.suffix.lower() in ['.mp4', '.mov', '.avi', '.mkv']])
+                if video_files:
+                    article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt')) if article_dir.exists() else []
+                    if not article_files:
+                        print(f"\n🎙️  语音识别模式: 从视频提取字幕")
+                        article_path = article_dir / '文章.md'
+                        transcribe_video_with_whisper(video_files[0], article_path)
+
         # 自动从文章生成音频（如果没有音频但有文章）
         # 返回音频分段信息，包含音色和图片分配
         audio_t0 = time.time()
@@ -3515,6 +3569,8 @@ AI配音音色 (--voice):
                        help='同时生成横竖双版本（如当前为横屏则额外生成竖屏，反之亦然）')
     parser.add_argument('--batch-variants-dir', metavar='PATH',
                        help='批量模板生成：扫描目录下的子目录作为素材变体，每套素材+模板文章生成一个视频（矩阵号）')
+    parser.add_argument('--whisper-transcribe', action='store_true',
+                       help='语音识别：使用本地 faster-whisper 识别视频语音，自动生成文章和字幕（视频模式专用）')
 
     args = parser.parse_args()
 
