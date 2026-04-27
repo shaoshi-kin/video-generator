@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-视频生成器 Web UI (Gradio 4.x+)
+视频生成器 Web UI
 
 启动方式:
     python3 01_核心脚本/webui.py
     默认在 http://127.0.0.1:7860 打开
 
-兼容 Gradio 4.x / 5.x
+兼容 Gradio 3.x / 4.x / 5.x
 """
 
 import os
@@ -336,7 +336,7 @@ def build_ui():
                 image_uploader = gr.File(
                     label="选择图片（支持多选）",
                     file_count="multiple",
-                    file_types=["image"]
+                    file_types=[".jpg", ".jpeg", ".png", ".webp", ".gif"]
                 )
                 upload_btn = gr.Button("📤 上传")
                 upload_status = gr.Textbox(label="上传状态", interactive=False, show_copy_button=False)
@@ -474,8 +474,9 @@ if __name__ == '__main__':
     print(f"   Gradio: {gr.__version__}")
     print("   地址: http://127.0.0.1:7860")
     demo = build_ui()
-    demo.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
-        show_error=True
-    )
+    if GRADIO_VERSION >= 4:
+        launch_kwargs = dict(server_name="127.0.0.1", server_port=7860, show_error=True)
+    else:
+        # Gradio 3.x 在某些代理环境下检测 localhost 会失败，改用 0.0.0.0
+        launch_kwargs = dict(server_name="0.0.0.0", server_port=7860)
+    demo.launch(**launch_kwargs)
