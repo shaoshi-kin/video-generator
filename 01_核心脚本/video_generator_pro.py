@@ -30,6 +30,8 @@ import re
 import time
 import datetime
 import concurrent.futures
+import logging
+import traceback
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 import tempfile
@@ -253,6 +255,42 @@ class Scene:
     duration: float
 
 
+class Tee:
+    """同时输出到终端和文件的 stdout 重定向器"""
+    def __init__(self, file_path: Path, encoding='utf-8'):
+        self.terminal = sys.stdout
+        self.log_file = open(file_path, 'w', encoding=encoding, buffering=1)
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log_file.write(message)
+        self.log_file.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+
+    def close(self):
+        if self.log_file and not self.log_file.closed:
+            self.log_file.close()
+
+
+def setup_logging(project_dir: Path, preview_mode: bool = False) -> Optional[Tee]:
+    """设置日志：同时输出到终端和日志文件"""
+    final_dir = project_dir / '07_final'
+    final_dir.mkdir(exist_ok=True)
+
+    now = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_name = f"generate_{now}.log"
+    log_path = final_dir / log_name
+
+    tee = Tee(log_path)
+    sys.stdout = tee
+
+    print(f"\n📝 运行日志已保存: {log_path}")
+    return tee
+
+
 def get_media_duration(path: str) -> float:
     """获取媒体时长（秒）"""
     cmd = [
@@ -264,6 +302,24 @@ def get_media_duration(path: str) -> float:
         return float(result.stdout.strip())
     except:
         return 0.0
+
+
+def run_ffmpeg(cmd: list, max_retries: int = 2, check_output: bool = True) -> subprocess.CompletedProcess:
+    """运行 ffmpeg 命令，支持失败重试"""
+    for attempt in range(1, max_retries + 1):
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return result
+        if attempt < max_retries:
+            stderr_short = result.stderr[:200].replace('\n', ' ')
+            print(f"   ⚠️  ffmpeg 失败 (尝试 {attempt}/{max_retries}): {stderr_short}")
+            print(f"   ⏳  2秒后重试...")
+            time.sleep(2)
+        else:
+            print(f"   ❌ ffmpeg 最终失败 (已重试 {max_retries} 次)")
+            if check_output and result.stderr:
+                print(f"   错误详情: {result.stderr[:500]}")
+    return result
 
 
 def build_subtitle_filter(
@@ -498,6 +554,26 @@ def parse_article_segments(text: str, default_voice: str = 'Xiaoxiao') -> tuple:
     return segments, default_image
 
 
+async def generate_tts_with_retry(content: str, voice_id: str, output_path: Path, rate: str = '+0%', max_retries: int = 3) -> bool:
+    """生成单段TTS音频，支持网络重试"""
+    for attempt in range(1, max_retries + 1):
+        try:
+            communicate = edge_tts.Communicate(content, voice=voice_id, rate=rate)
+            await communicate.save(str(output_path))
+            return True
+        except Exception as e:
+            if attempt < max_retries:
+                wait = attempt * 2  # 递增等待: 2s, 4s, 6s
+                print(f"   ⚠️  TTS生成失败 (尝试 {attempt}/{max_retries}): {e}")
+                print(f"   ⏳  {wait}秒后重试...")
+                await asyncio.sleep(wait)
+            else:
+                print(f"   ❌ TTS生成最终失败 (已重试 {max_retries} 次): {e}")
+                traceback.print_exc()
+                return False
+    return False
+
+
 async def generate_audio_from_article(article_path: Path, output_dir: Path, voice: str = 'Xiaoxiao', rate: str = '+0%', video_mode: bool = False) -> tuple:
     """从文章自动生成音频，支持 @音色 多角色标记和 @图 图片分配
 
@@ -563,21 +639,27 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
                 voice_key, content, img_ref = segments[0]
                 voice_id = VOICE_MAP.get(voice_key, VOICE_MAP.get(voice, 'zh-CN-XiaoxiaoNeural'))
                 output_path = output_dir / "scene_01.mp3"
-                communicate = edge_tts.Communicate(content, voice=voice_id, rate=rate)
-                await communicate.save(str(output_path))
-                print(f"   ✅ 音频生成完成: {output_path.name} ({len(content)} 字, {voice_key})")
-                segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'text': content, 'index': 1})
+                if await generate_tts_with_retry(content, voice_id, output_path, rate):
+                    print(f"   ✅ 音频生成完成: {output_path.name} ({len(content)} 字, {voice_key})")
+                    segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'text': content, 'index': 1})
+                else:
+                    return False, []
             else:
                 # 多音色，分别生成后合并
                 temp_files = []
                 for i, (voice_key, content, img_ref) in enumerate(segments, 1):
                     voice_id = VOICE_MAP.get(voice_key, VOICE_MAP.get(voice, 'zh-CN-XiaoxiaoNeural'))
                     temp_path = output_dir / f"_temp_{i:02d}.mp3"
-                    communicate = edge_tts.Communicate(content, voice=voice_id, rate=rate)
-                    await communicate.save(str(temp_path))
-                    temp_files.append(temp_path)
-                    segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'text': content, 'index': i})
-                    print(f"      ✓ 段落 {i}: {voice_key} - {content[:25]}...")
+                    if await generate_tts_with_retry(content, voice_id, temp_path, rate):
+                        temp_files.append(temp_path)
+                        segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'text': content, 'index': i})
+                        print(f"      ✓ 段落 {i}: {voice_key} - {content[:25]}...")
+                    else:
+                        # 清理已生成的临时文件
+                        for tf in temp_files:
+                            if tf.exists():
+                                tf.unlink()
+                        return False, []
 
                 # 合并音频
                 output_path = output_dir / "scene_01.mp3"
@@ -590,7 +672,7 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
                 try:
                     cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
                            '-i', concat_file, '-c', 'copy', str(output_path)]
-                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    result = run_ffmpeg(cmd, max_retries=2)
                     success = result.returncode == 0
                 finally:
                     os.unlink(concat_file)
@@ -609,17 +691,19 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
             for i, (voice_key, content, img_ref) in enumerate(segments, 1):
                 voice_id = VOICE_MAP.get(voice_key, VOICE_MAP.get(voice, 'zh-CN-XiaoxiaoNeural'))
                 output_path = output_dir / f"scene_{i:02d}.mp3"
-                communicate = edge_tts.Communicate(content, voice=voice_id, rate=rate)
-                await communicate.save(str(output_path))
-                audio_files.append(output_path)
-                segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'index': i})
-                img_info = f" [图:{img_ref}]" if img_ref else ""
-                print(f"      ✓ 场景 {i}: [{voice_key}]{img_info} {content[:25]}...")
+                if await generate_tts_with_retry(content, voice_id, output_path, rate):
+                    audio_files.append(output_path)
+                    segments_info.append({'voice': voice_key, 'image': img_ref or default_image, 'index': i})
+                    img_info = f" [图:{img_ref}]" if img_ref else ""
+                    print(f"      ✓ 场景 {i}: [{voice_key}]{img_info} {content[:25]}...")
+                else:
+                    return False, []
 
             print(f"   ✅ 音频生成完成: {len(audio_files)} 个场景")
             return len(audio_files) > 0, segments_info
     except Exception as e:
         print(f"   ❌ 音频生成失败: {e}")
+        traceback.print_exc()
         return False, []
 
 
@@ -676,6 +760,7 @@ def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = 
         return asyncio.run(generate_audio_from_article(article_path, audio_dir, voice, rate, video_mode))
     except Exception as e:
         print(f"   ❌ 生成失败: {e}")
+        traceback.print_exc()
         return False, []
 
 
@@ -1005,12 +1090,13 @@ def create_scene_with_effects(
         return False
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = run_ffmpeg(cmd, max_retries=2)
         if result.returncode != 0:
             print(f"   ⚠️ ffmpeg: {result.stderr[:200]}")
         return output_path.exists()
     except Exception as e:
         print(f"   ❌ 生成失败: {e}")
+        traceback.print_exc()
         return False
 
 
@@ -1042,6 +1128,7 @@ def _generate_scene_worker(task):
             media_name = scene.image_path.name
         elif scene.video_path:
             media_name = scene.video_path.name
+        traceback.print_exc()
         return {
             'index': scene.index,
             'success': False,
@@ -1104,7 +1191,7 @@ def add_transition(
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = run_ffmpeg(cmd, max_retries=2)
         if result.returncode != 0:
             print(f"   ⚠️  转场失败，使用简单拼接: {result.stderr[:100]}")
             return simple_concat([video1, video2], output)
@@ -1192,7 +1279,7 @@ def add_bgm(video: Path, bgm: Path, output: Path, volume: float = 0.3) -> bool:
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = run_ffmpeg(cmd, max_retries=2)
         if result.returncode != 0:
             print(f"   ⚠️ BGM添加失败，使用原视频")
             shutil.copy(str(video), str(output))
@@ -1200,6 +1287,7 @@ def add_bgm(video: Path, bgm: Path, output: Path, volume: float = 0.3) -> bool:
         return output.exists()
     except Exception as e:
         print(f"   ⚠️ BGM添加失败: {e}")
+        traceback.print_exc()
         shutil.copy(str(video), str(output))
         return True
 
@@ -1236,7 +1324,7 @@ def add_watermark(
     ]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = run_ffmpeg(cmd, max_retries=2)
         if result.returncode != 0:
             print(f"   ⚠️ 水印添加失败: {result.stderr[:100]}")
             shutil.copy(str(video), str(output))
@@ -1244,6 +1332,7 @@ def add_watermark(
         return output.exists()
     except Exception as e:
         print(f"   ⚠️ 水印添加失败: {e}")
+        traceback.print_exc()
         shutil.copy(str(video), str(output))
         return True
 
@@ -1254,430 +1343,438 @@ def process_project(
 ) -> Optional[Path]:
     """处理单个项目"""
 
-    # 预览模式
-    preview_mode = getattr(args, 'preview', False)
-    start_time = time.time()
-    stage_times = {}
+    tee = None
+    try:
+        tee = setup_logging(project_dir, preview_mode=getattr(args, 'preview', False))
 
-    print(f"\n{'='*60}")
-    if preview_mode:
-        print(f"👁️  预览模式: {project_dir.name}")
-        print(f"   只生成第一个场景，快速预览效果")
-    else:
-        print(f"🎬 处理项目: {project_dir.name}")
-    print(f"{'='*60}")
-
-    # 检查输出目录
-    final_dir = project_dir / '07_final'
-    final_dir.mkdir(exist_ok=True)
-
-    # 创建场景片段目录（保存中间产物，支持断点续传）
-    scenes_dir = project_dir / '06_scenes'
-    scenes_dir.mkdir(exist_ok=True)
-
-    if preview_mode:
-        output_path = final_dir / 'preview.mp4'
-    else:
-        if args.output:
-            output_name = args.output
-        else:
-            now = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_name = f"{project_dir.name}_{now}.mp4"
-        output_path = final_dir / output_name
-
-    # 自动从文章生成音频（如果没有音频但有文章）
-    # 返回音频分段信息，包含音色和图片分配
-    audio_t0 = time.time()
-    regenerate_audio = getattr(args, 'regenerate_audio', False)
-    audio_success, segments_info = auto_generate_audio(
-        project_dir,
-        voice=getattr(args, 'voice', 'Xiaoxiao'),
-        rate=getattr(args, 'rate', '+0%'),
-        force=regenerate_audio
-    )
-    stage_times['audio'] = time.time() - audio_t0
-
-    # 如果已有音频但没有分段信息，从文章中解析字幕文本
-    if not segments_info:
-        article_dir = project_dir / '01_article'
-        if article_dir.exists():
-            article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
-            if article_files:
-                try:
-                    with open(article_files[0], 'r', encoding='utf-8') as f:
-                        raw_text = f.read()
-                    raw_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
-                    text = re.sub(r'```[\s\S]*?```', '', raw_text)
-                    text = re.sub(r'`[^`]*`', '', text)
-                    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
-                    text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
-                    text = re.sub(r'<[^>]+>', '', text)
-                    text = re.sub(r'\n{3,}', '\n\n', text)
-                    parsed_segments, _ = parse_article_segments(text, default_voice=getattr(args, 'voice', 'Xiaoxiao'))
-                    segments_info = [
-                        {'voice': v, 'image': img, 'text': content, 'index': i}
-                        for i, (v, content, img) in enumerate(parsed_segments, 1)
-                    ]
-                except Exception:
-                    pass
-
-    # 发现场景（传递图片分配信息）
-    scenes = find_scenes(project_dir, image_assignments=segments_info)
-    if not scenes:
-        print("❌ 未找到任何场景素材")
-        return None
-
-    # 预览模式只取第一个场景
-    if preview_mode:
-        scenes = scenes[:1]
-        print(f"📁 发现 {len(scenes)} 个场景 (预览模式只取第一个)")
-    else:
-        print(f"📁 发现 {len(scenes)} 个场景")
-    print(f"📂 场景片段保存到: {scenes_dir}")
-
-    # 字幕样式
-    subtitle_style = None
-    if args.subtitle:
-        subtitle_style = SUBTITLE_STYLES.get(args.subtitle_style, SUBTITLE_STYLES['news'])
-        print(f"📝 字幕样式: {args.subtitle_style}")
-
-    if not preview_mode:
-        print(f"✨ 转场效果: {args.transition}")
-
-    # 处理每个场景（支持断点续传）
-    scene_videos = []
-    failed_scenes = []
-    skipped_scenes = []
-    pending_tasks = []
-    width, height = map(int, args.resolution.split('x'))
-
-    for i, scene in enumerate(scenes):
-        scene_output = scenes_dir / f"scene_{scene.index:02d}.mp4"
-
-        # 预览模式跳过断点续传（每次预览都重新生成）
-        if not preview_mode:
-            # 断点续传：检查是否已存在且有效
-            if scene_output.exists() and scene_output.stat().st_size > 1024:
-                # 验证文件是否有效（可播放）
-                try:
-                    verify_duration = get_media_duration(str(scene_output))
-                    if verify_duration > 0:
-                        scene_videos.append(scene_output)
-                        skipped_scenes.append(scene.index)
-                        print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
-                        print(f"   ⏭️  已存在，跳过生成 ({verify_duration:.1f}s)")
-                        continue
-                except:
-                    pass  # 文件损坏，重新生成
-
-        print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
-
-        if scene.video_path:
-            print(f"   🎥 视频: {scene.video_path.name}")
-        elif scene.image_path:
-            print(f"   🖼️  图片: {scene.image_path.name}")
-        else:
-            print(f"   ⚠️  跳过: 无素材")
-            failed_scenes.append(scene.index)
-            continue
-
-        if scene.audio_path:
-            print(f"   🎵 音频: {scene.audio_path.name}")
-
-        scene_fade = getattr(args, 'scene_fade', 0.0)
-        subtitle_animation = getattr(args, 'subtitle_animation', 'none')
-        pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode, scene_fade, subtitle_animation))
-
-    # 执行生成（支持并行）
-    total_pending = len(pending_tasks)
-    scene_t0 = time.time()
-    if args.parallel and total_pending > 1 and not preview_mode:
-        print(f"\n🚀 并行生成 {total_pending} 个场景...")
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            futures = [executor.submit(_generate_scene_worker, task) for task in pending_tasks]
-            for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                idx = result['index']
-                media = result.get('media_name') or '无素材'
-                if result['success']:
-                    scene_videos.append(result['output'])
-                    print(f"   ✅ [{len(scene_videos)}/{total_pending}] 场景 {idx:02d} ({media}) 完成 ({result['duration']:.1f}s)")
-                else:
-                    failed_scenes.append(idx)
-                    print(f"   ❌ [{len(scene_videos)+1}/{total_pending}] 场景 {idx:02d} ({media}) 失败: {result['error'] or '未知错误'}")
-    else:
-        # 顺序生成（预览模式也用顺序）
-        for task_idx, task in enumerate(pending_tasks, 1):
-            scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation = task
-            media = scene.image_path.name if scene.image_path else (scene.video_path.name if scene.video_path else '无素材')
-            try:
-                success = create_scene_with_effects(
-                    scene, scene_output, (width, height), fps,
-                    add_subtitle, subtitle_style, preview=preview,
-                    scene_fade=scene_fade, subtitle_animation=subtitle_animation
-                )
-                if success and scene_output.exists():
-                    scene_videos.append(scene_output)
-                    print(f"   ✅ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 完成 ({scene.duration:.1f}s)")
-                else:
-                    print(f"   ❌ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 生成失败")
-                    failed_scenes.append(scene.index)
-            except Exception as e:
-                print(f"   ❌ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 异常: {e}")
-                failed_scenes.append(scene.index)
-    stage_times['scenes'] = time.time() - scene_t0
-
-    # 汇总生成结果
-    print(f"\n{'─'*60}")
-    print(f"📊 场景生成统计:")
-    print(f"   ✅ 成功: {len(scene_videos)} 个")
-    if skipped_scenes:
-        print(f"   ⏭️  跳过(已存在): {len(skipped_scenes)} 个 {skipped_scenes}")
-    if failed_scenes:
-        print(f"   ❌ 失败: {len(failed_scenes)} 个 {failed_scenes}")
-    print(f"{'─'*60}")
-
-    if not scene_videos:
-        print("❌ 没有成功生成任何场景")
-        return None
-
-    # 预览模式：直接复制第一个场景，跳过合并/转场/片头片尾/BGM
-    if preview_mode:
-        main_video = scene_videos[0]
-        shutil.copy(str(main_video), str(output_path))
-        final_duration = get_media_duration(str(output_path))
-        final_size = output_path.stat().st_size / (1024 * 1024)
+        # 预览模式
+        preview_mode = getattr(args, 'preview', False)
+        start_time = time.time()
+        stage_times = {}
 
         print(f"\n{'='*60}")
-        print("✅ 预览视频生成完成!")
-        print(f"{'='*60}")
-        print(f"📁 输出: {output_path}")
-        print(f"⏱️  时长: {final_duration:.1f} 秒")
-        print(f"📦 大小: {final_size:.1f} MB")
-        print(f"🎞️  场景: 1 个（预览模式）")
-        print(f"📂 场景片段: {scenes_dir}")
-
-        return output_path
-
-    # 查找转场音效
-    sfx_path = None
-    if getattr(args, 'sfx', False):
-        sfx_dir = project_dir / '02_sfx'
-        if sfx_dir.exists():
-            sfx_exts = ['.mp3', '.wav', '.aac', '.m4a', '.ogg']
-            sfx_files = sorted([f for f in sfx_dir.iterdir() if f.suffix.lower() in sfx_exts])
-            if sfx_files:
-                sfx_path = sfx_files[0]
-                print(f"🔊 自动发现转场音效: {sfx_path.name}")
-
-    # 合并场景（带转场）
-    print(f"\n🎞️  合并场景（转场: {args.transition}）...")
-
-    merge_state_path = final_dir / '.merge_state.json'
-    temp_dir = Path(tempfile.mkdtemp())
-    merge_t0 = time.time()
-
-    try:
-        if len(scene_videos) == 1:
-            main_video = scene_videos[0]
-        elif args.transition == 'none' or not TRANSITIONS.get(args.transition):
-            # 无转场，一次性拼接（速度最快）
-            concat_output = temp_dir / 'concat_all.mp4'
-            print(f"   🔄 [1/1] 拼接 {len(scene_videos)} 个场景（无需重新编码）...")
-            if simple_concat(scene_videos, concat_output):
-                main_video = concat_output
-                print(f"   ✅ 拼接完成")
-            else:
-                print(f"   ❌ 拼接失败")
-                return None
+        if preview_mode:
+            print(f"👁️  预览模式: {project_dir.name}")
+            print(f"   只生成第一个场景，快速预览效果")
         else:
-            # 有转场，逐步合并，支持断点续传
-            resume_idx = 1
-            main_video = scene_videos[0]
+            print(f"🎬 处理项目: {project_dir.name}")
+        print(f"{'='*60}")
 
-            # 检查是否有未完成的合并
+        # 检查输出目录
+        final_dir = project_dir / '07_final'
+        final_dir.mkdir(exist_ok=True)
+
+        # 创建场景片段目录（保存中间产物，支持断点续传）
+        scenes_dir = project_dir / '06_scenes'
+        scenes_dir.mkdir(exist_ok=True)
+
+        if preview_mode:
+            output_path = final_dir / 'preview.mp4'
+        else:
+            if args.output:
+                output_name = args.output
+            else:
+                now = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                output_name = f"{project_dir.name}_{now}.mp4"
+            output_path = final_dir / output_name
+
+        # 自动从文章生成音频（如果没有音频但有文章）
+        # 返回音频分段信息，包含音色和图片分配
+        audio_t0 = time.time()
+        regenerate_audio = getattr(args, 'regenerate_audio', False)
+        audio_success, segments_info = auto_generate_audio(
+            project_dir,
+            voice=getattr(args, 'voice', 'Xiaoxiao'),
+            rate=getattr(args, 'rate', '+0%'),
+            force=regenerate_audio
+        )
+        stage_times['audio'] = time.time() - audio_t0
+
+        # 如果已有音频但没有分段信息，从文章中解析字幕文本
+        if not segments_info:
+            article_dir = project_dir / '01_article'
+            if article_dir.exists():
+                article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
+                if article_files:
+                    try:
+                        with open(article_files[0], 'r', encoding='utf-8') as f:
+                            raw_text = f.read()
+                        raw_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
+                        text = re.sub(r'```[\s\S]*?```', '', raw_text)
+                        text = re.sub(r'`[^`]*`', '', text)
+                        text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+                        text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
+                        text = re.sub(r'<[^>]+>', '', text)
+                        text = re.sub(r'\n{3,}', '\n\n', text)
+                        parsed_segments, _ = parse_article_segments(text, default_voice=getattr(args, 'voice', 'Xiaoxiao'))
+                        segments_info = [
+                            {'voice': v, 'image': img, 'text': content, 'index': i}
+                            for i, (v, content, img) in enumerate(parsed_segments, 1)
+                        ]
+                    except Exception:
+                        pass
+
+        # 发现场景（传递图片分配信息）
+        scenes = find_scenes(project_dir, image_assignments=segments_info)
+        if not scenes:
+            print("❌ 未找到任何场景素材")
+            return None
+
+        # 预览模式只取第一个场景
+        if preview_mode:
+            scenes = scenes[:1]
+            print(f"📁 发现 {len(scenes)} 个场景 (预览模式只取第一个)")
+        else:
+            print(f"📁 发现 {len(scenes)} 个场景")
+        print(f"📂 场景片段保存到: {scenes_dir}")
+
+        # 字幕样式
+        subtitle_style = None
+        if args.subtitle:
+            subtitle_style = SUBTITLE_STYLES.get(args.subtitle_style, SUBTITLE_STYLES['news'])
+            print(f"📝 字幕样式: {args.subtitle_style}")
+
+        if not preview_mode:
+            print(f"✨ 转场效果: {args.transition}")
+
+        # 处理每个场景（支持断点续传）
+        scene_videos = []
+        failed_scenes = []
+        skipped_scenes = []
+        pending_tasks = []
+        width, height = map(int, args.resolution.split('x'))
+
+        for i, scene in enumerate(scenes):
+            scene_output = scenes_dir / f"scene_{scene.index:02d}.mp4"
+
+            # 预览模式跳过断点续传（每次预览都重新生成）
+            if not preview_mode:
+                # 断点续传：检查是否已存在且有效
+                if scene_output.exists() and scene_output.stat().st_size > 1024:
+                    # 验证文件是否有效（可播放）
+                    try:
+                        verify_duration = get_media_duration(str(scene_output))
+                        if verify_duration > 0:
+                            scene_videos.append(scene_output)
+                            skipped_scenes.append(scene.index)
+                            print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
+                            print(f"   ⏭️  已存在，跳过生成 ({verify_duration:.1f}s)")
+                            continue
+                    except:
+                        pass  # 文件损坏，重新生成
+
+            print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
+
+            if scene.video_path:
+                print(f"   🎥 视频: {scene.video_path.name}")
+            elif scene.image_path:
+                print(f"   🖼️  图片: {scene.image_path.name}")
+            else:
+                print(f"   ⚠️  跳过: 无素材")
+                failed_scenes.append(scene.index)
+                continue
+
+            if scene.audio_path:
+                print(f"   🎵 音频: {scene.audio_path.name}")
+
+            scene_fade = getattr(args, 'scene_fade', 0.0)
+            subtitle_animation = getattr(args, 'subtitle_animation', 'none')
+            pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode, scene_fade, subtitle_animation))
+
+        # 执行生成（支持并行）
+        total_pending = len(pending_tasks)
+        scene_t0 = time.time()
+        if args.parallel and total_pending > 1 and not preview_mode:
+            print(f"\n🚀 并行生成 {total_pending} 个场景...")
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                futures = [executor.submit(_generate_scene_worker, task) for task in pending_tasks]
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    idx = result['index']
+                    media = result.get('media_name') or '无素材'
+                    if result['success']:
+                        scene_videos.append(result['output'])
+                        print(f"   ✅ [{len(scene_videos)}/{total_pending}] 场景 {idx:02d} ({media}) 完成 ({result['duration']:.1f}s)")
+                    else:
+                        failed_scenes.append(idx)
+                        print(f"   ❌ [{len(scene_videos)+1}/{total_pending}] 场景 {idx:02d} ({media}) 失败: {result['error'] or '未知错误'}")
+        else:
+            # 顺序生成（预览模式也用顺序）
+            for task_idx, task in enumerate(pending_tasks, 1):
+                scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation = task
+                media = scene.image_path.name if scene.image_path else (scene.video_path.name if scene.video_path else '无素材')
+                try:
+                    success = create_scene_with_effects(
+                        scene, scene_output, (width, height), fps,
+                        add_subtitle, subtitle_style, preview=preview,
+                        scene_fade=scene_fade, subtitle_animation=subtitle_animation
+                    )
+                    if success and scene_output.exists():
+                        scene_videos.append(scene_output)
+                        print(f"   ✅ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 完成 ({scene.duration:.1f}s)")
+                    else:
+                        print(f"   ❌ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 生成失败")
+                        failed_scenes.append(scene.index)
+                except Exception as e:
+                    print(f"   ❌ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 异常: {e}")
+                    traceback.print_exc()
+                    failed_scenes.append(scene.index)
+        stage_times['scenes'] = time.time() - scene_t0
+
+        # 汇总生成结果
+        print(f"\n{'─'*60}")
+        print(f"📊 场景生成统计:")
+        print(f"   ✅ 成功: {len(scene_videos)} 个")
+        if skipped_scenes:
+            print(f"   ⏭️  跳过(已存在): {len(skipped_scenes)} 个 {skipped_scenes}")
+        if failed_scenes:
+            print(f"   ❌ 失败: {len(failed_scenes)} 个 {failed_scenes}")
+        print(f"{'─'*60}")
+
+        if not scene_videos:
+            print("❌ 没有成功生成任何场景")
+            return None
+
+        # 预览模式：直接复制第一个场景，跳过合并/转场/片头片尾/BGM
+        if preview_mode:
+            main_video = scene_videos[0]
+            shutil.copy(str(main_video), str(output_path))
+            final_duration = get_media_duration(str(output_path))
+            final_size = output_path.stat().st_size / (1024 * 1024)
+
+            print(f"\n{'='*60}")
+            print("✅ 预览视频生成完成!")
+            print(f"{'='*60}")
+            print(f"📁 输出: {output_path}")
+            print(f"⏱️  时长: {final_duration:.1f} 秒")
+            print(f"📦 大小: {final_size:.1f} MB")
+            print(f"🎞️  场景: 1 个（预览模式）")
+            print(f"📂 场景片段: {scenes_dir}")
+
+            return output_path
+
+        # 查找转场音效
+        sfx_path = None
+        if getattr(args, 'sfx', False):
+            sfx_dir = project_dir / '02_sfx'
+            if sfx_dir.exists():
+                sfx_exts = ['.mp3', '.wav', '.aac', '.m4a', '.ogg']
+                sfx_files = sorted([f for f in sfx_dir.iterdir() if f.suffix.lower() in sfx_exts])
+                if sfx_files:
+                    sfx_path = sfx_files[0]
+                    print(f"🔊 自动发现转场音效: {sfx_path.name}")
+
+        # 合并场景（带转场）
+        print(f"\n🎞️  合并场景（转场: {args.transition}）...")
+
+        merge_state_path = final_dir / '.merge_state.json'
+        merge_t0 = time.time()
+
+        with tempfile.TemporaryDirectory() as temp_dir_str:
+            temp_dir = Path(temp_dir_str)
+            if len(scene_videos) == 1:
+                main_video = scene_videos[0]
+            elif args.transition == 'none' or not TRANSITIONS.get(args.transition):
+                # 无转场，一次性拼接（速度最快）
+                concat_output = temp_dir / 'concat_all.mp4'
+                print(f"   🔄 [1/1] 拼接 {len(scene_videos)} 个场景（无需重新编码）...")
+                if simple_concat(scene_videos, concat_output):
+                    main_video = concat_output
+                    print(f"   ✅ 拼接完成")
+                else:
+                    print(f"   ❌ 拼接失败")
+                    return None
+            else:
+                # 有转场，逐步合并，支持断点续传
+                resume_idx = 1
+                main_video = scene_videos[0]
+
+                # 检查是否有未完成的合并
+                if merge_state_path.exists():
+                    try:
+                        with open(merge_state_path, 'r', encoding='utf-8') as f:
+                            state = json.load(f)
+                        state_scenes = state.get('scene_names', [])
+                        current_scenes = [s.name for s in scene_videos]
+                        if state_scenes == current_scenes and state.get('transition') == args.transition:
+                            partial_file = final_dir / state.get('output', '')
+                            if partial_file.exists():
+                                duration = get_media_duration(str(partial_file))
+                                if duration > 0:
+                                    resume_idx = state.get('resume_idx', 1)
+                                    main_video = partial_file
+                                    print(f"⏭️  恢复未完成的合并，从 [{resume_idx}/{len(scene_videos)}] 继续")
+                    except Exception:
+                        traceback.print_exc()
+                        pass  # 状态文件损坏，重新合并
+
+                for i in range(resume_idx, len(scene_videos)):
+                    next_video = scene_videos[i]
+                    partial_file = final_dir / f'_partial_merged_{i}.mp4'
+                    from_name = main_video.name if hasattr(main_video, 'name') else str(main_video)
+                    to_name = next_video.name
+
+                    print(f"   🔄 [{i+1}/{len(scene_videos)}] 合并: {from_name} → {to_name}")
+
+                    prev_video = main_video
+                    success = add_transition(prev_video, next_video, partial_file, args.transition, args.transition_duration, sfx_path)
+
+                    if success:
+                        # 保存合并状态
+                        state = {
+                            'scene_names': [s.name for s in scene_videos],
+                            'transition': args.transition,
+                            'output': partial_file.name,
+                            'resume_idx': i + 1,
+                            'timestamp': datetime.datetime.now().isoformat()
+                        }
+                        with open(merge_state_path, 'w', encoding='utf-8') as f:
+                            json.dump(state, f, ensure_ascii=False, indent=2)
+
+                        # 清理旧的 partial 文件（如果是 partial 且不是当前输入）
+                        if isinstance(prev_video, Path) and prev_video.name.startswith('_partial_merged_'):
+                            try:
+                                prev_video.unlink()
+                            except OSError:
+                                pass
+
+                        main_video = partial_file
+                    else:
+                        print(f"   ❌ 合并失败，终止")
+                        return None
+
+            stage_times['merge'] = time.time() - merge_t0
+
+            # 添加片头片尾
+            if args.intro or args.outro:
+                print("🎬 添加片头片尾...")
+                with_intro_outro = temp_dir / 'with_intro_outro.mp4'
+                intro_path = Path(args.intro) if args.intro else None
+                outro_path = Path(args.outro) if args.outro else None
+
+                if add_intro_outro(main_video, intro_path, outro_path, with_intro_outro, args.transition):
+                    main_video = with_intro_outro
+                    print("✅ 片头片尾添加完成")
+
+            # 添加背景音乐
+            bgm_path = None
+            if args.bgm:
+                # 显式指定 BGM 路径
+                bgm_path = Path(args.bgm)
+            else:
+                # 自动查找项目 02_bgm/ 目录下的音乐文件
+                bgm_dir = project_dir / '02_bgm'
+                if bgm_dir.exists():
+                    music_exts = ['.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg']
+                    music_files = sorted([f for f in bgm_dir.iterdir() if f.suffix.lower() in music_exts])
+                    if music_files:
+                        bgm_path = music_files[0]
+                        print(f"🎵 自动发现 BGM: {bgm_path.name}")
+
+            if bgm_path and bgm_path.exists():
+                print(f"🎵 添加背景音乐 (音量: {int(args.bgm_volume * 100)}%)...")
+                with_bgm = temp_dir / 'with_bgm.mp4'
+                if add_bgm(main_video, bgm_path, with_bgm, args.bgm_volume):
+                    main_video = with_bgm
+                    print("✅ BGM添加完成")
+
+            # 添加水印
+            watermark_path = getattr(args, 'watermark', None)
+            if watermark_path:
+                watermark_path = Path(watermark_path)
+                if not watermark_path.is_absolute():
+                    watermark_path = project_dir / watermark_path
+            if watermark_path and watermark_path.exists():
+                print(f"🏷️ 添加水印 ({getattr(args, 'watermark_position', 'bottom-right')})...")
+                watermarked = temp_dir / 'watermarked.mp4'
+                if add_watermark(main_video, watermark_path, getattr(args, 'watermark_position', 'bottom-right'), watermarked):
+                    main_video = watermarked
+                    print("✅ 水印添加完成")
+
+            # 复制到输出位置
+            shutil.copy(str(main_video), str(output_path))
+
+            # 清理中间合并文件和状态
+            for f in final_dir.glob('_partial_merged_*.mp4'):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
             if merge_state_path.exists():
                 try:
-                    with open(merge_state_path, 'r', encoding='utf-8') as f:
-                        state = json.load(f)
-                    state_scenes = state.get('scene_names', [])
-                    current_scenes = [s.name for s in scene_videos]
-                    if state_scenes == current_scenes and state.get('transition') == args.transition:
-                        partial_file = final_dir / state.get('output', '')
-                        if partial_file.exists():
-                            duration = get_media_duration(str(partial_file))
-                            if duration > 0:
-                                resume_idx = state.get('resume_idx', 1)
-                                main_video = partial_file
-                                print(f"⏭️  恢复未完成的合并，从 [{resume_idx}/{len(scene_videos)}] 继续")
-                except Exception:
-                    pass  # 状态文件损坏，重新合并
+                    merge_state_path.unlink()
+                except OSError:
+                    pass
 
-            for i in range(resume_idx, len(scene_videos)):
-                next_video = scene_videos[i]
-                partial_file = final_dir / f'_partial_merged_{i}.mp4'
-                from_name = main_video.name if hasattr(main_video, 'name') else str(main_video)
-                to_name = next_video.name
+            # 显示结果
+            final_duration = get_media_duration(str(output_path))
+            final_size = output_path.stat().st_size / (1024 * 1024)
+            total_time = time.time() - start_time
 
-                print(f"   🔄 [{i+1}/{len(scene_videos)}] 合并: {from_name} → {to_name}")
+            print(f"\n{'='*60}")
+            print("✅ 视频合成完成!")
+            print(f"{'='*60}")
+            print(f"📁 输出: {output_path}")
+            print(f"⏱️  时长: {final_duration:.1f} 秒")
+            print(f"📦 大小: {final_size:.1f} MB")
+            print(f"🎞️  场景: {len(scene_videos)}/{len(scenes)}")
+            if skipped_scenes:
+                print(f"⏭️  跳过: {len(skipped_scenes)} 个（已存在）")
+            if failed_scenes:
+                print(f"❌ 失败: {len(failed_scenes)} 个 {failed_scenes}")
+            print(f"📂 场景片段: {scenes_dir}")
 
-                prev_video = main_video
-                success = add_transition(prev_video, next_video, partial_file, args.transition, args.transition_duration, sfx_path)
+            # 详细报告
+            print(f"\n{'─'*60}")
+            print("📊 生成详细报告:")
+            print(f"{'─'*60}")
+            print(f"  ⏱️  总耗时:       {total_time:.1f}s")
+            if 'audio' in stage_times:
+                print(f"  🎙️  音频生成:     {stage_times['audio']:.1f}s")
+            if 'scenes' in stage_times:
+                print(f"  🎬 场景生成:     {stage_times['scenes']:.1f}s")
+            if 'merge' in stage_times:
+                print(f"  🔗 合并转场:     {stage_times['merge']:.1f}s")
+            print(f"  📹 最终时长:     {final_duration:.1f}s")
+            print(f"  📦 文件大小:     {final_size:.1f} MB")
+            if final_duration > 0:
+                print(f"  📊 平均码率:     {final_size * 8 / final_duration:.1f} Mbps")
+            # 场景详情
+            if len(scene_videos) > 1:
+                print(f"\n  📋 各场景详情:")
+                for i, sv in enumerate(scene_videos, 1):
+                    sv_duration = get_media_duration(str(sv))
+                    sv_size = sv.stat().st_size / (1024 * 1024)
+                    print(f"     场景{i:02d}: {sv_duration:5.1f}s | {sv_size:5.1f}MB")
+            print(f"{'─'*60}")
 
-                if success:
-                    # 保存合并状态
-                    state = {
-                        'scene_names': [s.name for s in scene_videos],
-                        'transition': args.transition,
-                        'output': partial_file.name,
-                        'resume_idx': i + 1,
-                        'timestamp': datetime.datetime.now().isoformat()
-                    }
-                    with open(merge_state_path, 'w', encoding='utf-8') as f:
-                        json.dump(state, f, ensure_ascii=False, indent=2)
+            # 自动提取封面
+            if not preview_mode and output_path.exists():
+                cover_path = final_dir / 'cover.jpg'
+                try:
+                    # 提取中间帧作为封面
+                    mid_time = final_duration / 2 if final_duration > 0 else 1
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', str(output_path),
+                        '-ss', str(mid_time),
+                        '-vframes', '1',
+                        '-q:v', '2',
+                        str(cover_path)
+                    ]
+                    result = run_ffmpeg(cmd, max_retries=2, check_output=False)
+                    if cover_path.exists():
+                        print(f"\n🖼️  封面已提取: {cover_path.name}")
+                except Exception as e:
+                    pass  # 封面提取失败不影响主流程
 
-                    # 清理旧的 partial 文件（如果是 partial 且不是当前输入）
-                    if isinstance(prev_video, Path) and prev_video.name.startswith('_partial_merged_'):
-                        try:
-                            prev_video.unlink()
-                        except OSError:
-                            pass
-
-                    main_video = partial_file
-                else:
-                    print(f"   ❌ 合并失败，终止")
-                    return None
-
-        stage_times['merge'] = time.time() - merge_t0
-
-        # 添加片头片尾
-        if args.intro or args.outro:
-            print("🎬 添加片头片尾...")
-            with_intro_outro = temp_dir / 'with_intro_outro.mp4'
-            intro_path = Path(args.intro) if args.intro else None
-            outro_path = Path(args.outro) if args.outro else None
-
-            if add_intro_outro(main_video, intro_path, outro_path, with_intro_outro, args.transition):
-                main_video = with_intro_outro
-                print("✅ 片头片尾添加完成")
-
-        # 添加背景音乐
-        bgm_path = None
-        if args.bgm:
-            # 显式指定 BGM 路径
-            bgm_path = Path(args.bgm)
-        else:
-            # 自动查找项目 02_bgm/ 目录下的音乐文件
-            bgm_dir = project_dir / '02_bgm'
-            if bgm_dir.exists():
-                music_exts = ['.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg']
-                music_files = sorted([f for f in bgm_dir.iterdir() if f.suffix.lower() in music_exts])
-                if music_files:
-                    bgm_path = music_files[0]
-                    print(f"🎵 自动发现 BGM: {bgm_path.name}")
-
-        if bgm_path and bgm_path.exists():
-            print(f"🎵 添加背景音乐 (音量: {int(args.bgm_volume * 100)}%)...")
-            with_bgm = temp_dir / 'with_bgm.mp4'
-            if add_bgm(main_video, bgm_path, with_bgm, args.bgm_volume):
-                main_video = with_bgm
-                print("✅ BGM添加完成")
-
-        # 添加水印
-        watermark_path = getattr(args, 'watermark', None)
-        if watermark_path:
-            watermark_path = Path(watermark_path)
-            if not watermark_path.is_absolute():
-                watermark_path = project_dir / watermark_path
-        if watermark_path and watermark_path.exists():
-            print(f"🏷️ 添加水印 ({getattr(args, 'watermark_position', 'bottom-right')})...")
-            watermarked = temp_dir / 'watermarked.mp4'
-            if add_watermark(main_video, watermark_path, getattr(args, 'watermark_position', 'bottom-right'), watermarked):
-                main_video = watermarked
-                print("✅ 水印添加完成")
-
-        # 复制到输出位置
-        shutil.copy(str(main_video), str(output_path))
-
-        # 清理中间合并文件和状态
-        for f in final_dir.glob('_partial_merged_*.mp4'):
-            try:
-                f.unlink()
-            except OSError:
-                pass
-        if merge_state_path.exists():
-            try:
-                merge_state_path.unlink()
-            except OSError:
-                pass
-
-        # 显示结果
-        final_duration = get_media_duration(str(output_path))
-        final_size = output_path.stat().st_size / (1024 * 1024)
-        total_time = time.time() - start_time
-
-        print(f"\n{'='*60}")
-        print("✅ 视频合成完成!")
-        print(f"{'='*60}")
-        print(f"📁 输出: {output_path}")
-        print(f"⏱️  时长: {final_duration:.1f} 秒")
-        print(f"📦 大小: {final_size:.1f} MB")
-        print(f"🎞️  场景: {len(scene_videos)}/{len(scenes)}")
-        if skipped_scenes:
-            print(f"⏭️  跳过: {len(skipped_scenes)} 个（已存在）")
-        if failed_scenes:
-            print(f"❌ 失败: {len(failed_scenes)} 个 {failed_scenes}")
-        print(f"📂 场景片段: {scenes_dir}")
-
-        # 详细报告
-        print(f"\n{'─'*60}")
-        print("📊 生成详细报告:")
-        print(f"{'─'*60}")
-        print(f"  ⏱️  总耗时:       {total_time:.1f}s")
-        if 'audio' in stage_times:
-            print(f"  🎙️  音频生成:     {stage_times['audio']:.1f}s")
-        if 'scenes' in stage_times:
-            print(f"  🎬 场景生成:     {stage_times['scenes']:.1f}s")
-        if 'merge' in stage_times:
-            print(f"  🔗 合并转场:     {stage_times['merge']:.1f}s")
-        print(f"  📹 最终时长:     {final_duration:.1f}s")
-        print(f"  📦 文件大小:     {final_size:.1f} MB")
-        if final_duration > 0:
-            print(f"  📊 平均码率:     {final_size * 8 / final_duration:.1f} Mbps")
-        # 场景详情
-        if len(scene_videos) > 1:
-            print(f"\n  📋 各场景详情:")
-            for i, sv in enumerate(scene_videos, 1):
-                sv_duration = get_media_duration(str(sv))
-                sv_size = sv.stat().st_size / (1024 * 1024)
-                print(f"     场景{i:02d}: {sv_duration:5.1f}s | {sv_size:5.1f}MB")
-        print(f"{'─'*60}")
-
-        # 自动提取封面
-        if not preview_mode and output_path.exists():
-            cover_path = final_dir / 'cover.jpg'
-            try:
-                # 提取中间帧作为封面
-                mid_time = final_duration / 2 if final_duration > 0 else 1
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-i', str(output_path),
-                    '-ss', str(mid_time),
-                    '-vframes', '1',
-                    '-q:v', '2',
-                    str(cover_path)
-                ]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if cover_path.exists():
-                    print(f"\n🖼️  封面已提取: {cover_path.name}")
-            except Exception as e:
-                pass  # 封面提取失败不影响主流程
-
-        return output_path
+            return output_path
 
     finally:
-        # 清理临时目录
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        # 恢复 stdout 并关闭日志（临时目录由 TemporaryDirectory 自动清理）
+        if tee:
+            sys.stdout = tee.terminal
+            tee.close()
 
 
 def init_project_wizard(project_dir: Path, template: str = None) -> bool:
@@ -2371,6 +2468,7 @@ AI配音音色 (--voice):
                 sys.exit(1)
             except Exception as e:
                 print(f"\n❌ 项目异常: {e}")
+                traceback.print_exc()
                 results.append((project.name, False, None))
                 fail_count += 1
 
