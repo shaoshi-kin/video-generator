@@ -571,7 +571,7 @@ def generate_text_video(
         return False
 
 
-def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_size: str = 'base') -> bool:
+def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_size: str = 'small') -> bool:
     """使用本地 faster-whisper 识别视频语音，生成文章"""
     try:
         from faster_whisper import WhisperModel
@@ -581,7 +581,7 @@ def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_
 
     print(f"   🎙️  语音识别中... (模型: {model_size})")
     try:
-        # CPU 运行，base 模型约 74MB，首次使用自动下载
+        # CPU 运行，small 模型约 244MB，首次使用自动下载
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
         segments, info = model.transcribe(str(video_path), language="zh", beam_size=5)
 
