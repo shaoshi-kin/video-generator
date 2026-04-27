@@ -28,6 +28,11 @@ import argparse
 import asyncio
 import re
 import time
+
+try:
+    import readline
+except ImportError:
+    pass
 import datetime
 import concurrent.futures
 import logging
