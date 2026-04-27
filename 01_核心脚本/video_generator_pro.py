@@ -623,6 +623,71 @@ def parse_voice_segments(text: str, default_voice: str = 'Xiaoxiao') -> list:
     return segments, text, current_voice
 
 
+# ── 插件系统 ──
+class PluginManager:
+    """简单的插件系统，扫描项目 plugins/ 目录下的 .py 文件"""
+
+    def __init__(self, project_dir: Path):
+        self.hooks = {
+            'pre_parse_article': [],
+            'post_parse_article': [],
+            'pre_generate_audio': [],
+            'post_generate_audio': [],
+            'pre_generate_scene': [],
+            'post_generate_scene': [],
+            'pre_build_subtitle': [],
+            'pre_merge': [],
+        }
+        self._load_plugins(project_dir)
+
+    def _load_plugins(self, project_dir: Path):
+        plugins_dir = project_dir / 'plugins'
+        if not plugins_dir.exists():
+            return
+
+        import importlib.util
+        for plugin_file in sorted(plugins_dir.glob('*.py')):
+            if plugin_file.name.startswith('_'):
+                continue
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    plugin_file.stem, str(plugin_file)
+                )
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                # 自动注册钩子
+                for hook_name in self.hooks:
+                    fn = getattr(mod, hook_name, None)
+                    if callable(fn):
+                        self.hooks[hook_name].append(fn)
+                print(f"   🔌 插件加载: {plugin_file.name}")
+            except Exception as e:
+                print(f"   ⚠️  插件加载失败 {plugin_file.name}: {e}")
+
+    def run(self, hook_name: str, *args, **kwargs):
+        """执行某个钩子的所有插件函数"""
+        results = []
+        for fn in self.hooks.get(hook_name, []):
+            try:
+                result = fn(*args, **kwargs)
+                if result is not None:
+                    results.append(result)
+            except Exception as e:
+                print(f"   ⚠️  插件钩子 {hook_name} 执行失败: {e}")
+        return results
+
+    def run_first(self, hook_name: str, default, *args, **kwargs):
+        """执行钩子，返回第一个非 None 结果，否则返回 default"""
+        for fn in self.hooks.get(hook_name, []):
+            try:
+                result = fn(*args, **kwargs)
+                if result is not None:
+                    return result
+            except Exception as e:
+                print(f"   ⚠️  插件钩子 {hook_name} 执行失败: {e}")
+        return default
+
+
 def parse_article_segments(text: str, default_voice: str = 'Xiaoxiao') -> tuple:
     """解析文章，提取音色和图片分配信息
 
@@ -916,6 +981,112 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
         print(f"   ❌ 音频生成失败: {e}")
         traceback.print_exc()
         return False, []
+
+
+def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str = None, model: str = None) -> bool:
+    """根据文章内容自动生成多平台发布文案
+
+    支持通过环境变量配置 LLM API:
+    - OPENAI_API_KEY / KIMI_API_KEY: API 密钥
+    - LLM_BASE_URL: API 基础地址（默认 OpenAI 官方）
+    - LLM_MODEL: 模型名称（默认 gpt-4o）
+    """
+    import requests
+
+    article_dir = project_dir / '01_article'
+    if not article_dir.exists():
+        print("❌ 未找到 01_article/ 目录")
+        return False
+
+    article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
+    if not article_files:
+        print("❌ 未找到文章文件")
+        return False
+
+    try:
+        with open(article_files[0], 'r', encoding='utf-8') as f:
+            article_text = f.read()
+    except Exception as e:
+        print(f"❌ 读取文章失败: {e}")
+        return False
+
+    # 清理文章文本（移除标记）
+    clean_text = re.sub(r'@[^:\n]+[:：]', '', article_text)
+    clean_text = re.sub(r'[#*`\n\r]', ' ', clean_text)
+    clean_text = re.sub(r'\s+', ' ', clean_text).strip()[:1500]
+
+    # 获取 API 配置
+    api_key = api_key or os.environ.get('OPENAI_API_KEY') or os.environ.get('KIMI_API_KEY') or os.environ.get('ANTHROPIC_API_KEY')
+    base_url = base_url or os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
+    model = model or os.environ.get('LLM_MODEL', 'gpt-4o')
+
+    if not api_key:
+        print("\n⚠️  未配置 LLM API 密钥")
+        print("   请设置环境变量: export OPENAI_API_KEY='sk-...'")
+        print("   或: export KIMI_API_KEY='sk-...'")
+        print("   也可通过 --llm-api-key 参数传入")
+        return False
+
+    prompt = f"""你是一位资深短视频运营专家。请根据以下视频文案内容，生成适合不同平台的发布文案。
+
+【视频文案】
+{clean_text}
+
+请按以下格式输出（不要输出其他内容）：
+
+【抖音】
+标题：（15-25字，抓眼球，带悬念或数字）
+话题：（5-8个相关话题标签，格式 #标签）
+简介：（50-80字，引导点赞关注）
+
+【视频号】
+标题：（15-25字，正能量或实用价值）
+话题：（5-8个相关话题标签）
+简介：（50-80字，适合朋友圈传播）
+
+【B站】
+标题：（20-30字，可带【】分类标签）
+话题：（5-8个相关话题标签）
+简介：（80-120字，可引导三连）
+"""
+
+    print("\n✍️  正在生成发布文案...")
+    try:
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        payload = {
+            'model': model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.8,
+            'max_tokens': 1500
+        }
+        response = requests.post(f"{base_url.rstrip('/')}/chat/completions", headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        data = response.json()
+        copy_text = data['choices'][0]['message']['content']
+    except Exception as e:
+        print(f"❌ API 调用失败: {e}")
+        return False
+
+    # 保存文案
+    copy_path = article_dir / 'copy.md'
+    with open(copy_path, 'w', encoding='utf-8') as f:
+        f.write(f"# 发布文案\n\n")
+        f.write(f"> 自动生成于 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
+        f.write(copy_text)
+        f.write("\n")
+
+    print(f"✅ 发布文案已保存: {copy_path.name}")
+    # 打印摘要
+    lines = copy_text.split('\n')
+    for line in lines[:15]:
+        if line.strip():
+            print(f"   {line.strip()}")
+    if len(lines) > 15:
+        print(f"   ... ({len(lines)} 行)")
+    return True
 
 
 def normalize_audio_loudness(input_path: Path, output_path: Path, target_lufs: float = -14.0) -> bool:
@@ -1658,6 +1829,208 @@ def generate_dual_version(source_video: Path, output_video: Path, target_resolut
         return False
 
 
+def pre_check_project(project_dir: Path, args) -> Tuple[bool, List[str]]:
+    """项目素材预检，返回 (是否通过, 错误信息列表)
+
+    检查项:
+    - 项目目录结构
+    - 文章文件存在性
+    - 图片/视频素材存在性
+    - 字体文件可用性
+    - 水印文件存在性
+    - 分辨率格式合法性
+    - BGM文件存在性
+    - 输出目录可写性
+    """
+    errors = []
+    warnings = []
+
+    # 1. 项目目录
+    if not project_dir.exists():
+        errors.append(f"项目目录不存在: {project_dir}")
+        return False, errors
+
+    # 2. 文章文件
+    article_dir = project_dir / '01_article'
+    if not article_dir.exists():
+        errors.append("缺少 01_article/ 目录（无文章素材）")
+    else:
+        article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
+        if not article_files:
+            errors.append("01_article/ 目录下没有找到 .md 或 .txt 文章文件")
+
+    # 3. 图片/视频素材
+    images_dir = project_dir / '03_images'
+    videos_dir = project_dir / '04_videos'
+    img_exts = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']
+
+    if videos_dir.exists() and any(f.suffix.lower() in ['.mp4', '.mov', '.avi', '.mkv'] for f in videos_dir.iterdir()):
+        mode = 'video'
+    elif images_dir.exists() and any(f.suffix.lower() in img_exts for f in images_dir.iterdir()):
+        mode = 'image'
+    else:
+        errors.append("缺少素材: 03_images/ 无图片，且 04_videos/ 无视频")
+        mode = None
+
+    # 4. 字体可用性（检查常用中文字体）
+    font_candidates = [
+        '/System/Library/Fonts/STHeiti Medium.ttc',
+        '/System/Library/Fonts/PingFang.ttc',
+        '/System/Library/Fonts/Hiragino Sans GB.ttc',
+        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    ]
+    font_found = any(Path(f).exists() for f in font_candidates)
+    if not font_found:
+        warnings.append("未检测到常用中文字体，字幕可能显示为方框")
+
+    # 5. 水印文件
+    watermark = getattr(args, 'watermark', None)
+    if watermark:
+        watermark_path = Path(watermark)
+        if not watermark_path.is_absolute():
+            watermark_path = project_dir / watermark_path
+        if not watermark_path.exists():
+            errors.append(f"水印文件不存在: {watermark_path}")
+
+    # 6. 分辨率格式
+    resolution = getattr(args, 'resolution', '')
+    if resolution:
+        try:
+            w, h = map(int, resolution.split('x'))
+            if w <= 0 or h <= 0 or w > 7680 or h > 4320:
+                errors.append(f"分辨率数值异常: {resolution}")
+        except ValueError:
+            errors.append(f"分辨率格式错误: {resolution}，应为 宽x高 如 1920x1080")
+
+    # 7. BGM
+    bgm = getattr(args, 'bgm', None)
+    if bgm:
+        bgm_path = Path(bgm)
+        if not bgm_path.exists():
+            errors.append(f"指定BGM不存在: {bgm_path}")
+    else:
+        bgm_dir = project_dir / '02_bgm'
+        if bgm_dir.exists():
+            music_files = [f for f in bgm_dir.iterdir() if f.suffix.lower() in ['.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg']]
+            if not music_files:
+                warnings.append("02_bgm/ 目录存在但没有音乐文件")
+
+    # 8. 输出目录可写
+    final_dir = project_dir / '07_final'
+    try:
+        final_dir.mkdir(parents=True, exist_ok=True)
+        test_file = final_dir / '._write_test'
+        test_file.write_text('test')
+        test_file.unlink()
+    except Exception:
+        errors.append(f"输出目录不可写: {final_dir}")
+
+    # 打印报告
+    print(f"\n🔍 素材预检报告: {project_dir.name}")
+    print(f"{'─'*50}")
+    if mode:
+        print(f"   模式: {'🎬 视频模式' if mode == 'video' else '🖼️  图片模式'}")
+    if article_files:
+        print(f"   文章: {article_files[0].name}")
+    if font_found:
+        print(f"   字体: ✅ 可用")
+    if not warnings and not errors:
+        print(f"   状态: ✅ 全部通过")
+    for w in warnings:
+        print(f"   ⚠️  {w}")
+    for e in errors:
+        print(f"   ❌ {e}")
+    print(f"{'─'*50}")
+
+    return len(errors) == 0, errors
+
+
+def compute_file_hash(path: Path) -> str:
+    """计算文件MD5哈希，用于增量更新比较"""
+    try:
+        import hashlib
+        h = hashlib.md5()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def load_build_manifest(scenes_dir: Path) -> Dict:
+    """加载构建清单，记录每个场景的输入哈希和参数"""
+    manifest_path = scenes_dir / '.build_manifest.json'
+    if manifest_path.exists():
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_build_manifest(scenes_dir: Path, manifest: Dict):
+    """保存构建清单"""
+    manifest_path = scenes_dir / '.build_manifest.json'
+    try:
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def should_rebuild_scene(
+    scene: Scene,
+    scene_output: Path,
+    manifest: Dict,
+    width: int, height: int, fps: int,
+    add_subtitle: bool, subtitle_style_key: str,
+    scene_fade: float, subtitle_animation: str, subtitle_mode: str
+) -> bool:
+    """判断场景是否需要重新生成（增量更新）"""
+    # 如果输出文件不存在或损坏，需要重建
+    if not scene_output.exists() or scene_output.stat().st_size <= 1024:
+        return True
+
+    scene_key = f"scene_{scene.index:02d}"
+    if scene_key not in manifest:
+        return True
+
+    record = manifest[scene_key]
+
+    # 检查输入文件哈希
+    input_files = []
+    if scene.image_path:
+        input_files.append(('image', scene.image_path))
+    if scene.video_path:
+        input_files.append(('video', scene.video_path))
+    if scene.audio_path:
+        input_files.append(('audio', scene.audio_path))
+
+    for key, path in input_files:
+        current_hash = compute_file_hash(path)
+        if record.get(key) != current_hash:
+            return True
+
+    # 检查生成参数
+    params = {
+        'width': width,
+        'height': height,
+        'fps': fps,
+        'add_subtitle': add_subtitle,
+        'subtitle_style': subtitle_style_key if subtitle_style_key else 'none',
+        'scene_fade': scene_fade,
+        'subtitle_animation': subtitle_animation,
+        'subtitle_mode': subtitle_mode,
+    }
+    if record.get('params') != params:
+        return True
+
+    return False
+
+
 def process_project(
     project_dir: Path,
     args
@@ -1673,6 +2046,13 @@ def process_project(
         start_time = time.time()
         stage_times = {}
 
+        # 素材预检
+        if getattr(args, 'pre_check', True):
+            passed, errors = pre_check_project(project_dir, args)
+            if not passed:
+                print(f"\n❌ 预检未通过，终止处理")
+                return None
+
         print(f"\n{'='*60}")
         if preview_mode:
             print(f"👁️  预览模式: {project_dir.name}")
@@ -1680,6 +2060,9 @@ def process_project(
         else:
             print(f"🎬 处理项目: {project_dir.name}")
         print(f"{'='*60}")
+
+        # 加载插件
+        plugin_mgr = PluginManager(project_dir)
 
         # 检查输出目录
         final_dir = project_dir / '07_final'
@@ -1733,6 +2116,10 @@ def process_project(
                             {'voice': v, 'image': img, 'text': content, 'index': i}
                             for i, (v, content, img) in enumerate(parsed_segments, 1)
                         ]
+                        # 插件钩子：文章解析后
+                        plugin_results = plugin_mgr.run('post_parse_article', segments_info)
+                        if plugin_results:
+                            segments_info = plugin_results[-1]
                     except Exception:
                         pass
 
@@ -1759,12 +2146,16 @@ def process_project(
         if not preview_mode:
             print(f"✨ 转场效果: {args.transition}")
 
-        # 处理每个场景（支持断点续传）
+        # 处理每个场景（支持断点续传 + 增量更新）
         scene_videos = []
         failed_scenes = []
         skipped_scenes = []
         pending_tasks = []
         width, height = map(int, args.resolution.split('x'))
+
+        # 加载构建清单（增量更新）
+        build_manifest = load_build_manifest(scenes_dir) if not preview_mode else {}
+        new_manifest = {}
 
         for i, scene in enumerate(scenes):
             scene_output = scenes_dir / f"scene_{scene.index:02d}.mp4"
@@ -1777,11 +2168,29 @@ def process_project(
                     try:
                         verify_duration = get_media_duration(str(scene_output))
                         if verify_duration > 0:
-                            scene_videos.append(scene_output)
-                            skipped_scenes.append(scene.index)
-                            print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
-                            print(f"   ⏭️  已存在，跳过生成 ({verify_duration:.1f}s)")
-                            continue
+                            # 增量更新：进一步检查输入文件和参数是否变化
+                            scene_fade = getattr(args, 'scene_fade', 0.0)
+                            subtitle_animation = getattr(args, 'subtitle_animation', 'none')
+                            subtitle_mode = getattr(args, 'subtitle_mode', 'full')
+                            needs_rebuild = should_rebuild_scene(
+                                scene, scene_output, build_manifest,
+                                width, height, args.fps,
+                                args.subtitle, args.subtitle_style if subtitle_style else None,
+                                scene_fade, subtitle_animation, subtitle_mode
+                            )
+                            if not needs_rebuild:
+                                scene_videos.append(scene_output)
+                                skipped_scenes.append(scene.index)
+                                print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
+                                print(f"   ⏭️  未变更，跳过生成 ({verify_duration:.1f}s)")
+                                # 保留原manifest记录
+                                scene_key = f"scene_{scene.index:02d}"
+                                if scene_key in build_manifest:
+                                    new_manifest[scene_key] = build_manifest[scene_key]
+                                continue
+                            else:
+                                print(f"\n[{i+1}/{len(scenes)}] 场景 {scene.index:02d}...")
+                                print(f"   🔄 素材或参数变更，重新生成")
                     except:
                         pass  # 文件损坏，重新生成
 
@@ -1807,8 +2216,14 @@ def process_project(
         # 执行生成（支持并行）
         total_pending = len(pending_tasks)
         scene_t0 = time.time()
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            tqdm = None
+
         if not args.no_parallel and total_pending > 1 and not preview_mode:
             print(f"\n🚀 并行生成 {total_pending} 个场景（最多3并发）...")
+            pbar = tqdm(total=total_pending, desc="场景生成", unit="个", file=sys.stdout) if tqdm else None
             with concurrent.futures.ProcessPoolExecutor(max_workers=3) as executor:
                 futures = [executor.submit(_generate_scene_worker, task) for task in pending_tasks]
                 for future in concurrent.futures.as_completed(futures):
@@ -1817,12 +2232,21 @@ def process_project(
                     media = result.get('media_name') or '无素材'
                     if result['success']:
                         scene_videos.append(result['output'])
-                        print(f"   ✅ [{len(scene_videos)}/{total_pending}] 场景 {idx:02d} ({media}) 完成 ({result['duration']:.1f}s)")
+                        if pbar:
+                            pbar.update(1)
+                        else:
+                            print(f"   ✅ [{len(scene_videos)}/{total_pending}] 场景 {idx:02d} ({media}) 完成 ({result['duration']:.1f}s)")
                     else:
                         failed_scenes.append(idx)
-                        print(f"   ❌ [{len(scene_videos)+1}/{total_pending}] 场景 {idx:02d} ({media}) 失败: {result['error'] or '未知错误'}")
+                        if pbar:
+                            pbar.update(1)
+                        else:
+                            print(f"   ❌ [{len(scene_videos)+1}/{total_pending}] 场景 {idx:02d} ({media}) 失败: {result['error'] or '未知错误'}")
+            if pbar:
+                pbar.close()
         else:
             # 顺序生成（预览模式也用顺序）
+            pbar = tqdm(total=total_pending, desc="场景生成", unit="个", file=sys.stdout) if tqdm else None
             for task_idx, task in enumerate(pending_tasks, 1):
                 scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation, subtitle_mode = task
                 media = scene.image_path.name if scene.image_path else (scene.video_path.name if scene.video_path else '无素材')
@@ -1835,22 +2259,59 @@ def process_project(
                     )
                     if success and scene_output.exists():
                         scene_videos.append(scene_output)
-                        print(f"   ✅ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 完成 ({scene.duration:.1f}s)")
+                        if pbar:
+                            pbar.update(1)
+                        else:
+                            print(f"   ✅ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 完成 ({scene.duration:.1f}s)")
                     else:
-                        print(f"   ❌ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 生成失败")
+                        if pbar:
+                            pbar.update(1)
+                        else:
+                            print(f"   ❌ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 生成失败")
                         failed_scenes.append(scene.index)
                 except Exception as e:
-                    print(f"   ❌ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 异常: {e}")
+                    if pbar:
+                        pbar.update(1)
+                    else:
+                        print(f"   ❌ [{task_idx}/{total_pending}] 场景 {scene.index:02d} ({media}) 异常: {e}")
                     traceback.print_exc()
                     failed_scenes.append(scene.index)
+            if pbar:
+                pbar.close()
         stage_times['scenes'] = time.time() - scene_t0
+
+        # 保存构建清单（增量更新）
+        if not preview_mode:
+            for scene in scenes:
+                scene_output = scenes_dir / f"scene_{scene.index:02d}.mp4"
+                scene_key = f"scene_{scene.index:02d}"
+                if scene_output.exists() and scene_output.stat().st_size > 1024:
+                    record = {'output_exists': True}
+                    if scene.image_path:
+                        record['image'] = compute_file_hash(scene.image_path)
+                    if scene.video_path:
+                        record['video'] = compute_file_hash(scene.video_path)
+                    if scene.audio_path:
+                        record['audio'] = compute_file_hash(scene.audio_path)
+                    record['params'] = {
+                        'width': width,
+                        'height': height,
+                        'fps': args.fps,
+                        'add_subtitle': args.subtitle,
+                        'subtitle_style': args.subtitle_style if subtitle_style else 'none',
+                        'scene_fade': getattr(args, 'scene_fade', 0.0),
+                        'subtitle_animation': getattr(args, 'subtitle_animation', 'none'),
+                        'subtitle_mode': getattr(args, 'subtitle_mode', 'full'),
+                    }
+                    new_manifest[scene_key] = record
+            save_build_manifest(scenes_dir, new_manifest)
 
         # 汇总生成结果
         print(f"\n{'─'*60}")
         print(f"📊 场景生成统计:")
         print(f"   ✅ 成功: {len(scene_videos)} 个")
         if skipped_scenes:
-            print(f"   ⏭️  跳过(已存在): {len(skipped_scenes)} 个 {skipped_scenes}")
+            print(f"   ⏭️  跳过(未变更): {len(skipped_scenes)} 个 {skipped_scenes}")
         if failed_scenes:
             print(f"   ❌ 失败: {len(failed_scenes)} 个 {failed_scenes}")
         print(f"{'─'*60}")
@@ -1932,18 +2393,24 @@ def process_project(
                         traceback.print_exc()
                         pass  # 状态文件损坏，重新合并
 
+                merge_pbar = tqdm(total=len(scene_videos)-1, desc="合并转场", unit="个", file=sys.stdout, initial=resume_idx-1) if tqdm else None
                 for i in range(resume_idx, len(scene_videos)):
                     next_video = scene_videos[i]
                     partial_file = final_dir / f'_partial_merged_{i}.mp4'
                     from_name = main_video.name if hasattr(main_video, 'name') else str(main_video)
                     to_name = next_video.name
 
-                    print(f"   🔄 [{i+1}/{len(scene_videos)}] 合并: {from_name} → {to_name}")
+                    if merge_pbar:
+                        merge_pbar.set_postfix({"from": from_name[:15], "to": to_name[:15]})
+                    else:
+                        print(f"   🔄 [{i+1}/{len(scene_videos)}] 合并: {from_name} → {to_name}")
 
                     prev_video = main_video
                     success = add_transition(prev_video, next_video, partial_file, args.transition, args.transition_duration, sfx_path)
 
                     if success:
+                        if merge_pbar:
+                            merge_pbar.update(1)
                         # 保存合并状态
                         state = {
                             'scene_names': [s.name for s in scene_videos],
@@ -1964,8 +2431,12 @@ def process_project(
 
                         main_video = partial_file
                     else:
+                        if merge_pbar:
+                            merge_pbar.close()
                         print(f"   ❌ 合并失败，终止")
                         return None
+                if merge_pbar:
+                    merge_pbar.close()
 
             stage_times['merge'] = time.time() - merge_t0
 
@@ -2126,6 +2597,157 @@ def process_project(
         if tee:
             sys.stdout = tee.terminal
             tee.close()
+
+
+def import_ppt_project(ppt_path: Path, project_dir: Path) -> bool:
+    """导入PPT/Keynote项目：提取图片、备注文本，生成项目结构
+
+    依赖:
+    - python-pptx (pip install python-pptx)
+    - soffice (LibreOffice) 可选，用于将PPT每页转为PNG截图
+
+    流程:
+    1. 提取PPT中所有嵌入图片 -> 03_images/
+    2. 提取每页备注/文本 -> 01_article/文章.md
+    3. 如有soffice，自动将每页转为PNG截图 -> 03_images/slide_XX.png
+    4. 初始化项目配置
+    """
+    try:
+        from pptx import Presentation
+    except ImportError:
+        print("❌ 缺少依赖: pip install python-pptx")
+        return False
+
+    if not ppt_path.exists():
+        print(f"❌ PPT文件不存在: {ppt_path}")
+        return False
+
+    print(f"\n{'='*60}")
+    print(f"📊 PPT导入: {ppt_path.name}")
+    print(f"{'='*60}")
+
+    try:
+        prs = Presentation(str(ppt_path))
+    except Exception as e:
+        print(f"❌ 无法读取PPT: {e}")
+        return False
+
+    # 创建项目目录
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / '01_article').mkdir(exist_ok=True)
+    (project_dir / '03_images').mkdir(exist_ok=True)
+    (project_dir / '02_bgm').mkdir(exist_ok=True)
+
+    slide_count = len(prs.slides)
+    print(f"📑 共 {slide_count} 页幻灯片")
+
+    # 提取嵌入图片
+    img_dir = project_dir / '03_images'
+    extracted_images = 0
+    for i, slide in enumerate(prs.slides, 1):
+        for shape in slide.shapes:
+            if shape.shape_type == 13:  # MSO_SHAPE_TYPE.PICTURE
+                try:
+                    image = shape.image
+                    ext = image.ext if image.ext else 'png'
+                    img_path = img_dir / f"ppt_image_{i:02d}_{extracted_images+1:02d}.{ext}"
+                    img_path.write_bytes(image.blob)
+                    extracted_images += 1
+                except Exception:
+                    pass
+    if extracted_images > 0:
+        print(f"🖼️  提取嵌入图片: {extracted_images} 张")
+
+    # 生成文章.md（从备注和文本）
+    article_lines = [f"# {ppt_path.stem}\n"]
+    has_notes = False
+    for i, slide in enumerate(prs.slides, 1):
+        notes_text = ""
+        if slide.has_notes_slide:
+            notes_text = slide.notes_text_frame.text.strip()
+        if notes_text:
+            has_notes = True
+            article_lines.append(f"\n@图:slide_{i:02d}\n")
+            article_lines.append(f"{notes_text}\n")
+        else:
+            # 无备注时，提取该页主要文本
+            texts = []
+            for shape in slide.shapes:
+                if hasattr(shape, 'text') and shape.text.strip():
+                    t = shape.text.strip()
+                    # 过滤页码和过短文本
+                    if len(t) > 3:
+                        texts.append(t)
+            if texts:
+                article_lines.append(f"\n@图:slide_{i:02d}\n")
+                article_lines.append(f"{'。'.join(texts[:3])}。\n")
+
+    article_path = project_dir / '01_article' / '文章.md'
+    with open(article_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(article_lines))
+    print(f"📝 生成文章: {article_path.name} ({'含演讲备注' if has_notes else '从页面文本提取'})")
+
+    # 尝试用soffice将每页转为PNG
+    soffice_cmd = shutil.which('soffice') or shutil.which('libreoffice')
+    if soffice_cmd:
+        print(f"🔄 使用 {soffice_cmd} 转换幻灯片为图片...")
+        import tempfile, subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cmd = [
+                soffice_cmd, '--headless', '--convert-to', 'png',
+                '--outdir', str(tmp_path), str(ppt_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                png_files = sorted(tmp_path.glob('*.png'))
+                for idx, png in enumerate(png_files, 1):
+                    dest = img_dir / f"slide_{idx:02d}.png"
+                    shutil.copy(str(png), str(dest))
+                print(f"✅ 幻灯片截图: {len(png_files)} 张 -> 03_images/")
+            else:
+                print(f"⚠️  soffice 转换失败: {result.stderr[:200]}")
+    else:
+        print(f"\n⚠️  未检测到 LibreOffice (soffice)")
+        print(f"   如需PPT每页截图，请:")
+        print(f"   1. 安装 LibreOffice: brew install --cask libreoffice")
+        print(f"   2. 或手动用 PowerPoint/WPS 另存为图片到 03_images/")
+        print(f"   当前已提取所有嵌入图片和文本，可直接运行生成")
+
+    # 写入项目配置
+    config = {
+        "mode": "image",
+        "resolution": "1920x1080",
+        "fps": 30,
+        "subtitle": True,
+        "subtitle_style": "news",
+        "subtitle_animation": "none",
+        "transition": "fade",
+        "voice": "Xiaoxiao",
+        "transition_duration": 0.5,
+        "rate": "+18%",
+        "scene_fade": 0.0,
+        "bgm_volume": 0.25,
+        "watermark": None,
+        "watermark_position": "bottom-right",
+        "sfx": False,
+        "dual_version": False,
+        "created": datetime.datetime.now().isoformat()
+    }
+    config_path = project_dir / '.video_config.json'
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    print(f"⚙️  初始化配置: {config_path.name}")
+
+    print(f"\n{'='*60}")
+    print(f"✅ PPT导入完成!")
+    print(f"{'='*60}")
+    print(f"📁 项目: {project_dir}")
+    print(f"📝 文章: 01_article/文章.md")
+    print(f"🖼️  图片: 03_images/")
+    print(f"\n下一步:")
+    print(f"  python3 01_核心脚本/video_generator_pro.py -p {project_dir}")
+    return True
 
 
 def init_project_wizard(project_dir: Path, template: str = None) -> bool:
@@ -2757,12 +3379,21 @@ AI配音音色 (--voice):
                        help='关闭并行生成（默认开启，最多3并发）')
     parser.add_argument('--preview', action='store_true',
                        help='预览模式：只生成第一个场景，快速验证效果')
+    parser.add_argument('--skip-pre-check', action='store_true',
+                       help='跳过素材预检（默认执行预检）')
     parser.add_argument('--regenerate-audio', action='store_true',
                        help='强制重新生成音频（保留已有场景）')
     parser.add_argument('--normalize-audio', action='store_true',
                        help='音频响度标准化到 -14 LUFS（YouTube标准）')
     parser.add_argument('--intro-text', help='片头文字（自动生成片头视频）')
     parser.add_argument('--outro-text', help='片尾文字（自动生成片尾视频）')
+    parser.add_argument('--generate-copy', action='store_true',
+                       help='根据文章内容自动生成多平台发布文案（需配置 LLM API）')
+    parser.add_argument('--llm-api-key', help='LLM API 密钥（也可通过 OPENAI_API_KEY/KIMI_API_KEY 环境变量设置）')
+    parser.add_argument('--llm-base-url', help='LLM API 基础地址（默认: https://api.openai.com/v1）')
+    parser.add_argument('--llm-model', help='LLM 模型名称（默认: gpt-4o）')
+    parser.add_argument('--import-ppt', metavar='PATH',
+                       help='导入PPT/Keynote：提取图片和备注文本生成新项目')
     parser.add_argument('--queue', nargs='+', metavar='PATH',
                        help='队列模式：顺序处理多个项目，失败自动继续下一个')
     parser.add_argument('--scene-fade', type=float, default=0.0,
@@ -2798,6 +3429,16 @@ AI配音音色 (--voice):
         if init_project_wizard(project_dir, template=args.template):
             if input("\n是否立即检查素材? [y/N]: ").strip().lower() == 'y':
                 check_project_materials(project_dir)
+        sys.exit(0)
+
+    # PPT导入
+    if args.import_ppt:
+        ppt_path = Path(args.import_ppt)
+        if args.project:
+            project_dir = Path(args.project)
+        else:
+            project_dir = Path('projects') / ppt_path.stem
+        import_ppt_project(ppt_path, project_dir)
         sys.exit(0)
 
     # 批量处理 / 队列处理
@@ -2887,6 +3528,15 @@ AI配音音色 (--voice):
         if args.check:
             check_project_materials(project_dir)
             sys.exit(0)
+
+        # 生成发布文案（如果指定）
+        if args.generate_copy:
+            generate_publish_copy(
+                project_dir,
+                api_key=getattr(args, 'llm_api_key', None),
+                base_url=getattr(args, 'llm_base_url', None),
+                model=getattr(args, 'llm_model', None)
+            )
 
         result = process_project(project_dir, args)
 
