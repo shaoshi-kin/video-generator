@@ -339,15 +339,73 @@ def run_ffmpeg(cmd: list, max_retries: int = 2, check_output: bool = True) -> su
     return result
 
 
+def wrap_subtitle_text(text: str, max_chars: int = 14) -> str:
+    """智能字幕换行：按标点拆分，控制每行字数
+
+    Args:
+        text: 原始字幕文本
+        max_chars: 每行最大中文字符数（默认14个）
+
+    Returns:
+        带\\n换行符的字幕文本
+    """
+    if not text:
+        return text
+
+    # 先按主要标点拆分
+    import re
+    segments = re.split(r'([，。！？；：])', text.strip())
+
+    lines = []
+    current_line = ''
+
+    for seg in segments:
+        if not seg:
+            continue
+        # 如果是标点，追加到当前行
+        if seg in '，。！？；：':
+            current_line += seg
+            # 标点断行
+            if current_line:
+                lines.append(current_line)
+                current_line = ''
+            continue
+
+        # 纯文本段，检查长度
+        if len(current_line) + len(seg) <= max_chars:
+            current_line += seg
+        else:
+            # 当前行满了，先保存
+            if current_line:
+                lines.append(current_line)
+                current_line = ''
+            # 新段如果还是超长，强制按 max_chars 截断
+            while len(seg) > max_chars:
+                lines.append(seg[:max_chars])
+                seg = seg[max_chars:]
+            current_line = seg
+
+    if current_line:
+        lines.append(current_line)
+
+    return '\\n'.join(lines)
+
+
 def build_subtitle_filter(
     subtitle: str,
     subtitle_style: Dict,
     width: int,
     height: int,
     animation: str = 'none',
-    anim_duration: float = 0.5
+    anim_duration: float = 0.5,
+    wrap: bool = True,
+    max_chars_per_line: int = 14
 ) -> str:
-    """构建字幕滤镜字符串，支持动画效果"""
+    """构建字幕滤镜字符串，支持动画效果和自动换行"""
+    # 自动换行处理
+    if wrap:
+        subtitle = wrap_subtitle_text(subtitle, max_chars=max_chars_per_line)
+
     y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
 
     # 基础 drawtext 参数
@@ -375,6 +433,132 @@ def build_subtitle_filter(
         base += f":box=1:boxcolor={subtitle_style['boxcolor']}:boxborderw={subtitle_style['boxborderw']}"
 
     return base
+
+
+def build_sentence_subtitle_filter(
+    subtitle: str,
+    subtitle_style: Dict,
+    width: int,
+    height: int,
+    total_duration: float,
+    animation: str = 'none',
+    anim_duration: float = 0.5,
+    wrap: bool = True,
+    max_chars_per_line: int = 14
+) -> str:
+    """构建逐句字幕滤镜：按句子拆分，根据时长计算每句显示时间"""
+    import re
+
+    # 按句子拆分（支持中文标点）
+    sentences = re.split(r'([。！？；])', subtitle.strip())
+    # 重组：把标点和前面的内容合并
+    items = []
+    buf = ''
+    for s in sentences:
+        if s in '。！？；':
+            buf += s
+            if buf.strip():
+                items.append(buf.strip())
+            buf = ''
+        else:
+            buf += s
+    if buf.strip():
+        items.append(buf.strip())
+
+    if not items:
+        items = [subtitle.strip()]
+
+    # 单句直接走整段显示
+    if len(items) == 1:
+        return build_subtitle_filter(
+            subtitle, subtitle_style, width, height,
+            animation=animation, anim_duration=anim_duration,
+            wrap=wrap, max_chars_per_line=max_chars_per_line
+        )
+
+    # 按字数分配时长
+    total_chars = sum(len(s) for s in items)
+    char_time = total_duration / total_chars if total_chars > 0 else total_duration
+
+    # 计算每句起止时间
+    filters = []
+    current_time = 0.0
+    y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
+
+    for sentence in items:
+        sentence = sentence.replace("'", "'\\''")
+        sent_chars = len(sentence)
+        sent_duration = max(sent_chars * char_time, 1.0)  # 最少1秒
+
+        start_t = current_time
+        end_t = min(current_time + sent_duration + 0.3, total_duration)  # +0.3s缓冲
+
+        # 构建单句 drawtext，带 enable 时间窗口
+        ft = (
+            f"drawtext=fontfile=/System/Library/Fonts/STHeiti\\ Medium.ttc:"
+            f"text='{sentence}':"
+            f"fontcolor={subtitle_style['color']}:"
+            f"fontsize={subtitle_style['size']}:"
+            f"borderw={subtitle_style['borderw']}:"
+            f"bordercolor={subtitle_style['bordercolor']}:"
+            f"x=(w-text_w)/2:y={y_pos}:"
+            f"enable='between(t\\,{start_t:.2f}\\,{end_t:.2f})'"
+        )
+
+        if subtitle_style.get('box'):
+            ft += f":box=1:boxcolor={subtitle_style['boxcolor']}:boxborderw={subtitle_style['boxborderw']}"
+
+        filters.append(ft)
+        current_time += sent_duration
+
+    return ','.join(filters)
+
+
+def generate_text_video(
+    text: str,
+    output_path: Path,
+    resolution: Tuple[int, int] = (1920, 1080),
+    duration: float = 3.0,
+    fps: int = 30,
+    bg_color: str = 'black',
+    text_color: str = 'white',
+    font_size: int = 72
+) -> bool:
+    """生成文字+纯色背景的视频（用于片头/片尾模板），带静音音轨确保拼接兼容"""
+    width, height = resolution
+
+    # 安全处理文本中的特殊字符（单引号等）
+    safe_text = text.replace("'", "'\\''")
+
+    cmd = [
+        'ffmpeg', '-y',
+        '-f', 'lavfi', '-i', f"color=c={bg_color}:s={width}x{height}:d={duration}:r={fps}",
+        '-f', 'lavfi', '-i', f"anullsrc=r=48000:cl=stereo",  # 静音音轨
+        '-vf', (
+            f"drawtext=fontfile=/System/Library/Fonts/STHeiti\\ Medium.ttc:"
+            f"text='{safe_text}':fontcolor={text_color}:fontsize={font_size}:"
+            f"x=(w-text_w)/2:y=(h-text_h)/2:borderw=4:bordercolor=black:"
+            f"alpha='if(lt(t,0.3),t/0.3,if(lt(t,{duration-0.3}),1,({duration}-t)/0.3))'"
+        ),
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-r', str(fps),
+        '-shortest',
+        '-t', str(duration),
+        str(output_path)
+    ]
+
+    try:
+        result = run_ffmpeg(cmd, max_retries=1, check_output=False)
+        if result.returncode == 0 and output_path.exists():
+            print(f"   ✅ 文字视频生成: {output_path.name} ({duration:.1f}s)")
+            return True
+        print(f"   ⚠️  文字视频生成失败")
+        return False
+    except Exception as e:
+        print(f"   ⚠️  文字视频生成异常: {e}")
+        return False
 
 
 def build_fade_filter(duration: float, fade_duration: float) -> str:
@@ -734,7 +918,27 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
         return False, []
 
 
-def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = '+0%', force: bool = False) -> tuple:
+def normalize_audio_loudness(input_path: Path, output_path: Path, target_lufs: float = -14.0) -> bool:
+    """音频响度标准化（YouTube 标准 -14 LUFS）"""
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', str(input_path),
+        '-af', f'loudnorm=I={target_lufs}:TP=-1.5:LRA=11',
+        '-c:a', 'aac', '-b:a', '192k',
+        str(output_path)
+    ]
+    try:
+        result = run_ffmpeg(cmd, max_retries=1, check_output=False)
+        if result.returncode == 0 and output_path.exists():
+            return True
+        print(f"   ⚠️  响度标准化失败，使用原音频")
+        return False
+    except Exception as e:
+        print(f"   ⚠️  响度标准化异常: {e}")
+        return False
+
+
+def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = '+0%', force: bool = False, normalize: bool = False) -> tuple:
     """检查并自动生成音频
 
     Args:
@@ -784,11 +988,27 @@ def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = 
 
     # 运行异步生成
     try:
-        return asyncio.run(generate_audio_from_article(article_path, audio_dir, voice, rate, video_mode))
+        success, segments_info = asyncio.run(generate_audio_from_article(article_path, audio_dir, voice, rate, video_mode))
     except Exception as e:
         print(f"   ❌ 生成失败: {e}")
         traceback.print_exc()
         return False, []
+
+    # 响度标准化
+    if normalize and success:
+        print(f"\n🔊 音频响度标准化 (-14 LUFS)...")
+        audio_files = sorted(audio_dir.glob('*.mp3'))
+        for audio_file in audio_files:
+            temp_normalized = audio_file.parent / f"_{audio_file.name}"
+            if normalize_audio_loudness(audio_file, temp_normalized):
+                audio_file.unlink()
+                temp_normalized.rename(audio_file)
+                print(f"   ✅ {audio_file.name}")
+            else:
+                if temp_normalized.exists():
+                    temp_normalized.unlink()
+
+    return success, segments_info
 
 
 def find_image_by_ref(project_dir: Path, image_ref: str) -> Optional[Path]:
@@ -969,7 +1189,8 @@ def create_scene_with_effects(
     subtitle_style: Dict = None,
     preview: bool = False,
     scene_fade: float = 0.0,
-    subtitle_animation: str = 'none'
+    subtitle_animation: str = 'none',
+    subtitle_mode: str = 'full'
 ) -> bool:
     """创建单个场景视频，支持缩放效果、字幕、淡入淡出"""
 
@@ -983,10 +1204,17 @@ def create_scene_with_effects(
         vf_filter = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
 
         if add_subtitle and subtitle_style and scene.subtitle:
-            vf_filter += "," + build_subtitle_filter(
-                scene.subtitle, subtitle_style, width, height,
-                animation=subtitle_animation
-            )
+            if subtitle_mode == 'sentence' and scene.audio_path:
+                audio_dur = get_media_duration(str(scene.audio_path))
+                vf_filter += "," + build_sentence_subtitle_filter(
+                    scene.subtitle, subtitle_style, width, height, audio_dur,
+                    animation=subtitle_animation
+                )
+            else:
+                vf_filter += "," + build_subtitle_filter(
+                    scene.subtitle, subtitle_style, width, height,
+                    animation=subtitle_animation
+                )
 
         vf_filter += build_fade_filter(scene.duration, scene_fade)
 
@@ -1060,10 +1288,17 @@ def create_scene_with_effects(
 
         # 添加字幕
         if add_subtitle and subtitle_style and scene.subtitle:
-            vf_filter += "," + build_subtitle_filter(
-                scene.subtitle, subtitle_style, width, height,
-                animation=subtitle_animation
-            )
+            if subtitle_mode == 'sentence' and scene.audio_path:
+                audio_dur = get_media_duration(str(scene.audio_path))
+                vf_filter += "," + build_sentence_subtitle_filter(
+                    scene.subtitle, subtitle_style, width, height, audio_dur,
+                    animation=subtitle_animation
+                )
+            else:
+                vf_filter += "," + build_subtitle_filter(
+                    scene.subtitle, subtitle_style, width, height,
+                    animation=subtitle_animation
+                )
 
         # 淡入淡出
         vf_filter += build_fade_filter(duration, scene_fade)
@@ -1129,12 +1364,13 @@ def create_scene_with_effects(
 
 def _generate_scene_worker(task):
     """并行场景生成工作函数"""
-    scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation = task
+    scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation, subtitle_mode = task
     try:
         success = create_scene_with_effects(
             scene, scene_output, (width, height), fps,
             add_subtitle, subtitle_style, preview=preview,
-            scene_fade=scene_fade, subtitle_animation=subtitle_animation
+            scene_fade=scene_fade, subtitle_animation=subtitle_animation,
+            subtitle_mode=subtitle_mode
         )
         media_name = None
         if scene.image_path:
@@ -1229,13 +1465,16 @@ def add_transition(
 
 
 def simple_concat(videos: List[Path], output: Path) -> bool:
-    """简单拼接视频"""
+    """简单拼接视频，先尝试快速复制拼接，失败则回退到重新编码"""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
         for video in videos:
-            f.write(f"file '{str(video)}'\n")
+            # concat demuxer 要求对单引号进行转义
+            escaped = str(video).replace("'", "'\\''")
+            f.write(f"file '{escaped}'\n")
         concat_file = f.name
 
     try:
+        # 先尝试 -c copy（最快，不重新编码）
         cmd = [
             'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
             '-i', concat_file,
@@ -1243,7 +1482,21 @@ def simple_concat(videos: List[Path], output: Path) -> bool:
             str(output)
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
-        return output.exists()
+        if result.returncode == 0 and output.exists() and output.stat().st_size > 1024:
+            return True
+
+        # 失败则回退到重新编码（兼容不同分辨率/帧率/编码参数）
+        print(f"   🔄 复制拼接失败，回退到重新编码...")
+        cmd = [
+            'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+            '-i', concat_file,
+            '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-b:a', '192k',
+            str(output)
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result.returncode == 0 and output.exists() and output.stat().st_size > 1024
     finally:
         os.unlink(concat_file)
 
@@ -1454,7 +1707,8 @@ def process_project(
             project_dir,
             voice=getattr(args, 'voice', 'Xiaoxiao'),
             rate=getattr(args, 'rate', '+0%'),
-            force=regenerate_audio
+            force=regenerate_audio,
+            normalize=getattr(args, 'normalize_audio', False)
         )
         stage_times['audio'] = time.time() - audio_t0
 
@@ -1547,7 +1801,8 @@ def process_project(
 
             scene_fade = getattr(args, 'scene_fade', 0.0)
             subtitle_animation = getattr(args, 'subtitle_animation', 'none')
-            pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode, scene_fade, subtitle_animation))
+            subtitle_mode = getattr(args, 'subtitle_mode', 'full')
+            pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode, scene_fade, subtitle_animation, subtitle_mode))
 
         # 执行生成（支持并行）
         total_pending = len(pending_tasks)
@@ -1569,13 +1824,14 @@ def process_project(
         else:
             # 顺序生成（预览模式也用顺序）
             for task_idx, task in enumerate(pending_tasks, 1):
-                scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation = task
+                scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation, subtitle_mode = task
                 media = scene.image_path.name if scene.image_path else (scene.video_path.name if scene.video_path else '无素材')
                 try:
                     success = create_scene_with_effects(
                         scene, scene_output, (width, height), fps,
                         add_subtitle, subtitle_style, preview=preview,
-                        scene_fade=scene_fade, subtitle_animation=subtitle_animation
+                        scene_fade=scene_fade, subtitle_animation=subtitle_animation,
+                        subtitle_mode=subtitle_mode
                     )
                     if success and scene_output.exists():
                         scene_videos.append(scene_output)
@@ -1714,11 +1970,24 @@ def process_project(
             stage_times['merge'] = time.time() - merge_t0
 
             # 添加片头片尾
-            if args.intro or args.outro:
+            intro_path = Path(args.intro) if getattr(args, 'intro', None) else None
+            outro_path = Path(args.outro) if getattr(args, 'outro', None) else None
+            intro_text = getattr(args, 'intro_text', None)
+            outro_text = getattr(args, 'outro_text', None)
+
+            if intro_path or outro_path or intro_text or outro_text:
                 print("🎬 添加片头片尾...")
                 with_intro_outro = temp_dir / 'with_intro_outro.mp4'
-                intro_path = Path(args.intro) if args.intro else None
-                outro_path = Path(args.outro) if args.outro else None
+
+                # 如果提供了文字，自动生成片头/片尾视频
+                if intro_text:
+                    intro_path = temp_dir / '_auto_intro.mp4'
+                    cw, ch = map(int, args.resolution.split('x'))
+                    generate_text_video(intro_text, intro_path, (cw, ch), duration=3.0, fps=args.fps)
+                if outro_text:
+                    outro_path = temp_dir / '_auto_outro.mp4'
+                    cw, ch = map(int, args.resolution.split('x'))
+                    generate_text_video(outro_text, outro_path, (cw, ch), duration=3.0, fps=args.fps)
 
                 if add_intro_outro(main_video, intro_path, outro_path, with_intro_outro, args.transition):
                     main_video = with_intro_outro
@@ -2047,6 +2316,10 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'watermark_position': 'bottom-right',
         'sfx': False,
         'dual_version': dual_version,
+        'normalize_audio': False,
+        'subtitle_mode': 'full',
+        'intro_text': None,
+        'outro_text': None,
         'created': str(datetime.datetime.now())
     }
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -2231,7 +2504,7 @@ def merge_project_config(args, project_dir: Path):
         'voice', 'resolution', 'fps', 'subtitle_style', 'transition',
         'transition_duration', 'rate', 'bgm_volume', 'subtitle', 'output',
         'scene_fade', 'watermark', 'watermark_position', 'sfx', 'subtitle_animation',
-        'dual_version'
+        'dual_version', 'normalize_audio', 'subtitle_mode', 'intro_text', 'outro_text'
     ]
 
     applied = []
@@ -2486,6 +2759,10 @@ AI配音音色 (--voice):
                        help='预览模式：只生成第一个场景，快速验证效果')
     parser.add_argument('--regenerate-audio', action='store_true',
                        help='强制重新生成音频（保留已有场景）')
+    parser.add_argument('--normalize-audio', action='store_true',
+                       help='音频响度标准化到 -14 LUFS（YouTube标准）')
+    parser.add_argument('--intro-text', help='片头文字（自动生成片头视频）')
+    parser.add_argument('--outro-text', help='片尾文字（自动生成片尾视频）')
     parser.add_argument('--queue', nargs='+', metavar='PATH',
                        help='队列模式：顺序处理多个项目，失败自动继续下一个')
     parser.add_argument('--scene-fade', type=float, default=0.0,
@@ -2499,6 +2776,9 @@ AI配音音色 (--voice):
     parser.add_argument('--subtitle-animation', default='none',
                        choices=['none', 'slide_up', 'fade_in'],
                        help='字幕动画效果 (默认: none)')
+    parser.add_argument('--subtitle-mode', default='full',
+                       choices=['full', 'sentence'],
+                       help='字幕显示模式: full(整段显示) / sentence(逐句显示) (默认: full)')
     parser.add_argument('--dual-version', action='store_true',
                        help='同时生成横竖双版本（如当前为横屏则额外生成竖屏，反之亦然）')
 
