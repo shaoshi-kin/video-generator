@@ -108,7 +108,9 @@ def load_project_info(project_name: str):
     img_count = len([f for f in images_dir.iterdir() if f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif']]) if images_dir.exists() else 0
     videos_dir = project_dir / '04_videos'
     video_count = len([f for f in videos_dir.iterdir() if f.suffix.lower() in ['.mp4', '.mov', '.avi']]) if videos_dir.exists() else 0
-    info = f"图片: {img_count} 张 | 视频: {video_count} 个"
+    bgm_dir = project_dir / '02_bgm'
+    bgm_count = len([f for f in bgm_dir.iterdir() if f.suffix.lower() in ['.mp3', '.wav', '.aac', '.m4a']]) if bgm_dir.exists() else 0
+    info = f"图片: {img_count} 张 | 视频: {video_count} 个 | BGM: {bgm_count} 首"
 
     # 已有视频
     final_dir = project_dir / '07_final'
@@ -161,8 +163,23 @@ def save_config(project_name: str, config_text: str):
     return "✅ 配置已保存"
 
 
+def _extract_file_path(file_obj):
+    """兼容 Gradio 3.x/4.x/5.x/6.x 的文件路径提取"""
+    if file_obj is None:
+        return None
+    if hasattr(file_obj, 'path'):
+        return Path(file_obj.path)
+    elif hasattr(file_obj, 'name'):
+        return Path(file_obj.name)
+    elif isinstance(file_obj, str):
+        return Path(file_obj)
+    elif hasattr(file_obj, '__fspath__'):
+        return Path(file_obj)
+    return None
+
+
 def upload_images(project_name: str, files):
-    """上传图片到项目（兼容 Gradio 4.x）"""
+    """上传图片到项目"""
     if not project_name:
         return "❌ 请先选择项目", ""
     if not files:
@@ -173,21 +190,8 @@ def upload_images(project_name: str, files):
     images_dir.mkdir(parents=True, exist_ok=True)
 
     count = 0
-    # Gradio 4.x 返回的文件对象可能有 .path 或 .name 属性
     for file in files:
-        if file is None:
-            continue
-        src_path = None
-        # Gradio 4.x: FileData 对象
-        if hasattr(file, 'path'):
-            src_path = Path(file.path)
-        elif hasattr(file, 'name'):
-            src_path = Path(file.name)
-        elif isinstance(file, str):
-            src_path = Path(file)
-        elif hasattr(file, '__fspath__'):
-            src_path = Path(file)
-
+        src_path = _extract_file_path(file)
         if src_path and src_path.exists():
             dest = images_dir / src_path.name
             shutil.copy(str(src_path), str(dest))
@@ -196,6 +200,26 @@ def upload_images(project_name: str, files):
     total = len([f for f in images_dir.iterdir() if f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif']])
     info = f"图片: {total} 张"
     return f"✅ 已上传 {count} 张图片", info
+
+
+def upload_bgm(project_name: str, file):
+    """上传 BGM 到项目"""
+    if not project_name:
+        return "❌ 请先选择项目", ""
+    src_path = _extract_file_path(file)
+    if not src_path or not src_path.exists():
+        return "⚠️ 未选择文件", ""
+
+    project_dir = PROJECTS_DIR / project_name
+    bgm_dir = project_dir / '02_bgm'
+    bgm_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = bgm_dir / src_path.name
+    shutil.copy(str(src_path), str(dest))
+
+    total = len([f for f in bgm_dir.iterdir() if f.suffix.lower() in ['.mp3', '.wav', '.aac', '.m4a']])
+    info = f"BGM: {total} 首"
+    return f"✅ 已上传 BGM: {src_path.name}", info
 
 
 def create_project_ui(project_name: str, template: str):
@@ -298,17 +322,14 @@ def get_latest_video_path(project_name: str):
 
 
 def build_ui():
-    """构建 Gradio 4.x UI"""
+    """构建 Gradio UI"""
     with gr.Blocks(title="视频生成器 Pro") as demo:
-        gr.Markdown("# 🎬 视频生成器 Pro - Web UI")
+        gr.Markdown("# 🎬 视频生成器 Pro")
         gr.Markdown("可视化配置，一键生成视频")
-
-        # 状态变量（用于跨组件传递）
-        current_project = gr.State("")
 
         with gr.Row():
             # 左侧：项目管理和素材
-            with gr.Column(scale=1):
+            with gr.Column(scale=1, min_width=280):
                 gr.Markdown("## 📁 项目管理")
 
                 project_dropdown = gr.Dropdown(
@@ -319,39 +340,50 @@ def build_ui():
                 )
 
                 with gr.Row():
-                    refresh_btn = gr.Button("🔄 刷新")
-                    load_btn = gr.Button("📂 加载", variant="primary")
+                    refresh_btn = gr.Button("🔄 刷新", size="sm")
+                    load_btn = gr.Button("📂 加载", variant="primary", size="sm")
 
-                gr.Markdown("### ➕ 创建新项目")
-                new_project_name = gr.Textbox(label="项目名称", placeholder="my_video")
-                template_select = gr.Dropdown(
-                    choices=['横屏 YouTube', '竖屏短视频', '新闻播报', '通用'],
-                    value='通用',
-                    label="模板"
-                )
-                create_btn = gr.Button("创建项目", variant="secondary")
-                create_status = gr.Textbox(label="状态", interactive=False)
+                gr.Markdown("---")
+                with gr.Accordion("➕ 创建新项目", open=False):
+                    new_project_name = gr.Textbox(label="项目名称", placeholder="my_video")
+                    template_select = gr.Dropdown(
+                        choices=['横屏 YouTube', '竖屏短视频', '新闻播报', '通用'],
+                        value='通用',
+                        label="模板"
+                    )
+                    create_btn = gr.Button("创建项目", variant="secondary")
+                    create_status = gr.Textbox(label="状态", interactive=False)
 
-                # 项目信息
-                project_info = gr.Textbox(label="项目信息", interactive=False)
+                gr.Markdown("---")
+                gr.Markdown("### 📊 项目素材")
+                project_info = gr.Textbox(label="素材统计", interactive=False)
 
-                # 素材上传
-                gr.Markdown("---\n### 🖼️ 上传图片")
-                image_uploader = gr.File(
-                    label="选择图片（支持多选）",
-                    file_count="multiple",
-                    file_types=[".jpg", ".jpeg", ".png", ".webp", ".gif"]
-                )
-                upload_btn = gr.Button("📤 上传")
-                upload_status = gr.Textbox(label="上传状态", interactive=False)
+                gr.Markdown("---")
+                with gr.Accordion("🖼️ 上传图片", open=False):
+                    image_uploader = gr.File(
+                        label="选择图片（支持多选）",
+                        file_count="multiple",
+                        file_types=[".jpg", ".jpeg", ".png", ".webp", ".gif"]
+                    )
+                    upload_btn = gr.Button("📤 上传图片", size="sm")
+                    upload_status = gr.Textbox(label="状态", interactive=False)
+
+                with gr.Accordion("🎵 上传 BGM", open=False):
+                    bgm_uploader = gr.File(
+                        label="选择背景音乐",
+                        file_count="single",
+                        file_types=[".mp3", ".wav", ".aac", ".m4a"]
+                    )
+                    bgm_upload_btn = gr.Button("📤 上传 BGM", size="sm")
+                    bgm_upload_status = gr.Textbox(label="状态", interactive=False)
 
             # 右侧：编辑、配置、生成、预览
-            with gr.Column(scale=2):
+            with gr.Column(scale=2, min_width=500):
                 with gr.Tabs():
                     with gr.Tab("📝 文章"):
                         article_editor = gr.Textbox(
                             label="文章文案",
-                            lines=20,
+                            lines=22,
                             placeholder="# 标题\n\n@全局:女声\n@默认图: 01\n\n第一段内容...\n\n第二段内容..."
                         )
                         save_article_btn = gr.Button("💾 保存文章", variant="primary")
@@ -367,7 +399,8 @@ def build_ui():
                         save_config_btn = gr.Button("💾 保存配置", variant="primary")
                         config_status = gr.Textbox(label="状态", interactive=False)
 
-                        gr.Markdown("### 快速参数")
+                        gr.Markdown("---")
+                        gr.Markdown("#### 快速参数")
                         with gr.Row():
                             quick_res = gr.Dropdown(RESOLUTIONS, value='1920x1080', label="分辨率")
                             quick_style = gr.Dropdown(SUBTITLE_STYLES, value='news', label="字幕样式")
@@ -379,26 +412,25 @@ def build_ui():
                             placeholder="例如: --intro-text '欢迎' --outro-text '再见' --normalize-audio",
                             value=""
                         )
-                        generate_btn = gr.Button("🎬 开始生成", variant="primary")
+                        generate_btn = gr.Button("🎬 开始生成", variant="primary", size="lg")
                         log_output = gr.Textbox(
                             label="生成日志",
-                            lines=25,
+                            lines=28,
                             interactive=False
                         )
 
                     with gr.Tab("🎞️ 预览"):
-                        video_player = gr.Video(label="最新视频", height=400)
-                        refresh_video_btn = gr.Button("🔄 刷新")
+                        video_player = gr.Video(label="最新视频", height=420)
+                        with gr.Row():
+                            refresh_video_btn = gr.Button("🔄 刷新视频", size="sm")
 
         # ========== 事件绑定 ==========
 
-        # 刷新项目列表
         def refresh_projects():
             return gr.update(choices=list_projects())
 
         refresh_btn.click(fn=refresh_projects, outputs=project_dropdown)
 
-        # 加载项目
         def on_load(project_name):
             if not project_name:
                 return "", "未选择项目", None, ""
@@ -411,35 +443,36 @@ def build_ui():
             outputs=[article_editor, project_info, video_player, config_editor]
         )
 
-        # 创建项目
         create_btn.click(
             fn=create_project_ui,
             inputs=[new_project_name, template_select],
             outputs=[create_status, project_dropdown, article_editor, project_info, video_player, config_editor]
         )
 
-        # 保存文章
         save_article_btn.click(
             fn=save_article,
             inputs=[project_dropdown, article_editor],
             outputs=article_status
         )
 
-        # 上传图片
         upload_btn.click(
             fn=upload_images,
             inputs=[project_dropdown, image_uploader],
             outputs=[upload_status, project_info]
         )
 
-        # 保存配置
+        bgm_upload_btn.click(
+            fn=upload_bgm,
+            inputs=[project_dropdown, bgm_uploader],
+            outputs=[bgm_upload_status, project_info]
+        )
+
         save_config_btn.click(
             fn=save_config,
             inputs=[project_dropdown, config_editor],
             outputs=config_status
         )
 
-        # 快速参数联动（修改下拉框时更新 JSON 编辑器）
         def update_config_json(config_text, res, style, transition):
             try:
                 config = json.loads(config_text)
@@ -454,14 +487,12 @@ def build_ui():
         quick_style.change(fn=update_config_json, inputs=[config_editor, quick_res, quick_style, quick_transition], outputs=config_editor)
         quick_transition.change(fn=update_config_json, inputs=[config_editor, quick_res, quick_style, quick_transition], outputs=config_editor)
 
-        # 生成视频
         generate_btn.click(
             fn=generate_video_stream,
             inputs=[project_dropdown, extra_args],
             outputs=log_output
         )
 
-        # 刷新视频
         refresh_video_btn.click(
             fn=get_latest_video_path,
             inputs=project_dropdown,
@@ -479,6 +510,5 @@ if __name__ == '__main__':
     if GRADIO_VERSION >= 4:
         launch_kwargs = dict(server_name="127.0.0.1", server_port=7860, show_error=True)
     else:
-        # Gradio 3.x 在某些代理环境下检测 localhost 会失败，改用 0.0.0.0
         launch_kwargs = dict(server_name="0.0.0.0", server_port=7860)
     demo.launch(**launch_kwargs)

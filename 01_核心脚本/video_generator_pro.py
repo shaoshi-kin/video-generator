@@ -1123,21 +1123,44 @@ def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = 
     audio_dir = project_dir / '05_audio'
     article_dir = project_dir / '01_article'
 
-    # 如果已经有音频且非强制模式，跳过
-    if not force and audio_dir.exists() and list(audio_dir.glob('*.mp3')):
-        return False, []
+    # 查找文章文件
+    article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt')) if article_dir.exists() else []
+
+    # 解析文章段落数，用于判断是否需要重新生成
+    article_segment_count = 0
+    if article_files:
+        try:
+            with open(article_files[0], 'r', encoding='utf-8') as f:
+                raw_text = f.read()
+            raw_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
+            text = re.sub(r'```[\s\S]*?```', '', raw_text)
+            text = re.sub(r'`[^`]*`', '', text)
+            text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+            text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
+            text = re.sub(r'<[^>]+>', '', text)
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            parsed_segments, _ = parse_article_segments(text, default_voice=voice)
+            article_segment_count = len(parsed_segments)
+        except Exception:
+            pass
+
+    existing_mp3s = sorted(audio_dir.glob('*.mp3')) if audio_dir.exists() else []
+
+    # 如果已经有音频且非强制模式，检查段落数是否匹配
+    if not force and existing_mp3s:
+        if article_segment_count > 0 and len(existing_mp3s) != article_segment_count:
+            print(f"🔄 文章段落数变化 ({len(existing_mp3s)} → {article_segment_count})，自动重新生成音频")
+            for f in existing_mp3s:
+                f.unlink()
+        else:
+            return False, []
 
     # 强制模式：删除已有音频
-    if force and audio_dir.exists():
-        for f in audio_dir.glob('*.mp3'):
+    if force and existing_mp3s:
+        for f in existing_mp3s:
             f.unlink()
         print(f"🔄 强制重新生成音频，已清理旧音频")
 
-    # 查找文章文件
-    if not article_dir.exists():
-        return False, []
-
-    article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
     if not article_files:
         return False, []
 

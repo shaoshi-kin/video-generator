@@ -1,0 +1,19 @@
+{
+  "mode": "image",
+  "resolution": "1080x1920",
+  "fps": 30,
+  "subtitle": true,
+  "subtitle_style": "tiktok",
+  "subtitle_animation": "none",
+  "transition": "zoomin",
+  "voice": "Xiaoxiao",
+  "transition_duration": 0.5,
+  "rate": "+18%",
+  "scene_fade": 0.0,
+  "bgm_volume": 0.25,
+  "watermark": null,
+  "watermark_position": "bottom-right",
+  "sfx": false,
+  "dual_version": false,
+  "created": "2026-04-27 21:44:05.411441"
+}
