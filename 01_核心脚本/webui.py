@@ -46,6 +46,7 @@ DEFAULT_CONFIG = {
     "subtitle": True,
     "subtitle_style": "news",
     "subtitle_animation": "none",
+    "subtitle_mode": "sentence",
     "transition": "fade",
     "voice": "Xiaoxiao",
     "transition_duration": 0.5,

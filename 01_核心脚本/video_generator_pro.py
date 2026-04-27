@@ -340,7 +340,7 @@ def run_ffmpeg(cmd: list, max_retries: int = 2, check_output: bool = True) -> su
 
 
 def wrap_subtitle_text(text: str, max_chars: int = 14) -> str:
-    """智能字幕换行：按标点拆分，控制每行字数
+    """智能字幕换行：按标点拆分，控制每行字数，仅在行满时换行
 
     Args:
         text: 原始字幕文本
@@ -352,8 +352,8 @@ def wrap_subtitle_text(text: str, max_chars: int = 14) -> str:
     if not text:
         return text
 
-    # 先按主要标点拆分
     import re
+    # 按主要标点拆分，保留标点
     segments = re.split(r'([，。！？；：])', text.strip())
 
     lines = []
@@ -365,13 +365,10 @@ def wrap_subtitle_text(text: str, max_chars: int = 14) -> str:
         # 如果是标点，追加到当前行
         if seg in '，。！？；：':
             current_line += seg
-            # 标点断行
-            if current_line:
-                lines.append(current_line)
-                current_line = ''
+            # 标点后不强制换行，继续累积
             continue
 
-        # 纯文本段，检查长度
+        # 纯文本段，检查追加后是否超过 max_chars
         if len(current_line) + len(seg) <= max_chars:
             current_line += seg
         else:
@@ -405,6 +402,9 @@ def build_subtitle_filter(
     # 自动换行处理
     if wrap:
         subtitle = wrap_subtitle_text(subtitle, max_chars=max_chars_per_line)
+
+    # 对反斜杠做转义，避免 ffmpeg filter 解析器把 \n 当作换行导致 filter 断裂
+    subtitle = subtitle.replace('\\', '\\\\')
 
     y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
 
@@ -486,7 +486,8 @@ def build_sentence_subtitle_filter(
     y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
 
     for sentence in items:
-        sentence = sentence.replace("'", "'\\''")
+        # 转义单引号和反斜杠，避免 ffmpeg filter 解析出错
+        sentence = sentence.replace("\\", "\\\\").replace("'", "'\\''")
         sent_chars = len(sentence)
         sent_duration = max(sent_chars * char_time, 1.0)  # 最少1秒
 
@@ -960,8 +961,10 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
 
                 if success:
                     print(f"   ✅ 音频生成完成: {output_path.name} ({len(segments)} 个音色段落)")
+                segments_info.sort(key=lambda x: x['index'])
                 return success, segments_info
 
+            segments_info.sort(key=lambda x: x['index'])
             return True, segments_info
         else:
             # 图片模式：并行生成每个段落音频
@@ -975,6 +978,8 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
             if not all(results):
                 return False, []
 
+            # 并发 append 顺序不保证，按 index 排序后再返回
+            segments_info.sort(key=lambda x: x['index'])
             print(f"   ✅ 音频生成完成: {len(segments)} 个场景")
             return True, segments_info
     except Exception as e:
@@ -1384,7 +1389,7 @@ def create_scene_with_effects(
     preview: bool = False,
     scene_fade: float = 0.0,
     subtitle_animation: str = 'none',
-    subtitle_mode: str = 'full'
+    subtitle_mode: str = 'sentence'
 ) -> bool:
     """创建单个场景视频，支持缩放效果、字幕、淡入淡出"""
 
@@ -2324,7 +2329,7 @@ def process_project(
                         'subtitle_style': args.subtitle_style if subtitle_style else 'none',
                         'scene_fade': getattr(args, 'scene_fade', 0.0),
                         'subtitle_animation': getattr(args, 'subtitle_animation', 'none'),
-                        'subtitle_mode': getattr(args, 'subtitle_mode', 'full'),
+                        'subtitle_mode': getattr(args, 'subtitle_mode', 'sentence'),
                     }
                     new_manifest[scene_key] = record
             save_build_manifest(scenes_dir, new_manifest)
@@ -3430,9 +3435,9 @@ AI配音音色 (--voice):
     parser.add_argument('--subtitle-animation', default='none',
                        choices=['none', 'slide_up', 'fade_in'],
                        help='字幕动画效果 (默认: none)')
-    parser.add_argument('--subtitle-mode', default='full',
+    parser.add_argument('--subtitle-mode', default='sentence',
                        choices=['full', 'sentence'],
-                       help='字幕显示模式: full(整段显示) / sentence(逐句显示) (默认: full)')
+                       help='字幕显示模式: full(整段显示) / sentence(逐句显示) (默认: sentence)')
     parser.add_argument('--dual-version', action='store_true',
                        help='同时生成横竖双版本（如当前为横屏则额外生成竖屏，反之亦然）')
 
