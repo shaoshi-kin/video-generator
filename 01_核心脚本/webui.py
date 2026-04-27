@@ -326,10 +326,10 @@ def build_ui():
                     label="模板"
                 )
                 create_btn = gr.Button("创建项目", variant="secondary")
-                create_status = gr.Textbox(label="状态", interactive=False, show_copy_button=False)
+                create_status = gr.Textbox(label="状态", interactive=False)
 
                 # 项目信息
-                project_info = gr.Textbox(label="项目信息", interactive=False, show_copy_button=False)
+                project_info = gr.Textbox(label="项目信息", interactive=False)
 
                 # 素材上传
                 gr.Markdown("---\n### 🖼️ 上传图片")
@@ -339,7 +339,7 @@ def build_ui():
                     file_types=[".jpg", ".jpeg", ".png", ".webp", ".gif"]
                 )
                 upload_btn = gr.Button("📤 上传")
-                upload_status = gr.Textbox(label="上传状态", interactive=False, show_copy_button=False)
+                upload_status = gr.Textbox(label="上传状态", interactive=False)
 
             # 右侧：编辑、配置、生成、预览
             with gr.Column(scale=2):
@@ -351,7 +351,7 @@ def build_ui():
                             placeholder="# 标题\n\n@全局:女声\n@默认图: 01\n\n第一段内容...\n\n第二段内容..."
                         )
                         save_article_btn = gr.Button("💾 保存文章", variant="primary")
-                        article_status = gr.Textbox(label="状态", interactive=False, show_copy_button=False)
+                        article_status = gr.Textbox(label="状态", interactive=False)
 
                     with gr.Tab("⚙️ 配置"):
                         config_editor = gr.Code(
@@ -361,7 +361,7 @@ def build_ui():
                             value=json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2)
                         )
                         save_config_btn = gr.Button("💾 保存配置", variant="primary")
-                        config_status = gr.Textbox(label="状态", interactive=False, show_copy_button=False)
+                        config_status = gr.Textbox(label="状态", interactive=False)
 
                         gr.Markdown("### 快速参数")
                         with gr.Row():
@@ -379,9 +379,7 @@ def build_ui():
                         log_output = gr.Textbox(
                             label="生成日志",
                             lines=25,
-                            interactive=False,
-                            show_copy_button=True,
-                            autoscroll=True
+                            interactive=False
                         )
 
                     with gr.Tab("🎞️ 预览"):
