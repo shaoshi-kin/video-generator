@@ -2236,17 +2236,8 @@ def process_project(
                     print("❌ 视频模式需要文章或语音识别")
                     return None
             else:
-                # 有文章：询问是否保留原声（非交互模式可用 --keep-original-audio）
-                if getattr(args, 'keep_original_audio', False):
-                    keep_original_audio = True
-                else:
-                    choice = input("\n🔊 检测到视频素材，是否保留视频原声？ [y/N]: ").strip().replace('\r', '').lower()
-                    keep_original_audio = choice == 'y'
-
-                if keep_original_audio:
-                    print("🎬 保留视频原声，使用文章文本生成字幕")
-                else:
-                    print("🎬 使用 AI 配音替换原声")
+                # 有文章：直接使用 AI 配音替换原声
+                print("🎬 使用 AI 配音替换原声")
 
         # 自动从文章生成音频（如果没有音频但有文章）
         # 返回音频分段信息，包含音色和图片分配
@@ -3649,8 +3640,6 @@ AI配音音色 (--voice):
                        help='批量模板生成：扫描目录下的子目录作为素材变体，每套素材+模板文章生成一个视频（矩阵号）')
     parser.add_argument('--whisper-transcribe', action='store_true',
                        help='语音识别：使用本地 faster-whisper 识别视频语音，自动生成文章和字幕（视频模式专用）')
-    parser.add_argument('--keep-original-audio', action='store_true',
-                       help='视频模式：保留视频原声，不生成 AI 配音（使用文章文本生成字幕）')
 
     args = parser.parse_args()
 
