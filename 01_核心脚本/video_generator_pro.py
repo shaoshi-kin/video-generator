@@ -587,12 +587,12 @@ def transcribe_video_with_whisper(video_path: Path, output_article: Path, model_
 
         print(f"   检测语言: {info.language} (概率: {info.language_probability:.2f})")
 
-        # 收集所有文本
+        # 收集所有文本，合并为一段（视频模式通常单个视频配完整字幕）
         texts = []
         for segment in segments:
             texts.append(segment.text.strip())
 
-        full_text = '\n\n'.join(texts)
+        full_text = ' '.join(texts)
 
         # 保存文章
         output_article.parent.mkdir(parents=True, exist_ok=True)
@@ -1335,8 +1335,15 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
 
             # 从图片分配信息中获取字幕文本
             subtitle_text = ''
-            if image_assignments and i <= len(image_assignments):
-                subtitle_text = image_assignments[i - 1].get('text', '')
+            if image_assignments:
+                if i <= len(image_assignments):
+                    subtitle_text = image_assignments[i - 1].get('text', '')
+                # 视频数量少于 assignments 时，将剩余字幕合并到最后一个视频
+                if len(video_files) < len(image_assignments) and i == len(video_files):
+                    remaining_texts = [a.get('text', '') for a in image_assignments[i:]]
+                    remaining = ' '.join([t for t in remaining_texts if t])
+                    if remaining:
+                        subtitle_text = (subtitle_text + ' ' + remaining).strip()
 
             scenes.append(Scene(
                 index=i,
@@ -1960,16 +1967,7 @@ def pre_check_project(project_dir: Path, args) -> Tuple[bool, List[str]]:
         errors.append(f"项目目录不存在: {project_dir}")
         return False, errors
 
-    # 2. 文章文件
-    article_dir = project_dir / '01_article'
-    if not article_dir.exists():
-        errors.append("缺少 01_article/ 目录（无文章素材）")
-    else:
-        article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
-        if not article_files:
-            errors.append("01_article/ 目录下没有找到 .md 或 .txt 文章文件")
-
-    # 3. 图片/视频素材
+    # 先检测模式（供后续检查使用）
     images_dir = project_dir / '03_images'
     videos_dir = project_dir / '04_videos'
     img_exts = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']
@@ -1981,6 +1979,21 @@ def pre_check_project(project_dir: Path, args) -> Tuple[bool, List[str]]:
     else:
         errors.append("缺少素材: 03_images/ 无图片，且 04_videos/ 无视频")
         mode = None
+
+    # 2. 文章文件
+    article_dir = project_dir / '01_article'
+    if not article_dir.exists():
+        errors.append("缺少 01_article/ 目录（无文章素材）")
+    else:
+        article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
+        if not article_files:
+            # 视频模式下允许无文章（可使用语音识别）
+            if mode == 'video':
+                warnings.append("未找到文章，视频模式可使用语音识别生成字幕")
+            else:
+                errors.append("01_article/ 目录下没有找到 .md 或 .txt 文章文件")
+
+    # 3. 图片/视频素材（模式已在上面检测）
 
     # 4. 字体可用性（检查常用中文字体）
     font_candidates = [
@@ -2157,7 +2170,7 @@ def process_project(
         stage_times = {}
 
         # 素材预检
-        if getattr(args, 'pre_check', True):
+        if not getattr(args, 'skip_pre_check', False):
             passed, errors = pre_check_project(project_dir, args)
             if not passed:
                 print(f"\n❌ 预检未通过，终止处理")
@@ -2192,35 +2205,95 @@ def process_project(
                 output_name = f"{project_dir.name}_{now}.mp4"
             output_path = final_dir / output_name
 
-        # 语音识别：视频模式下，用 faster-whisper 识别语音生成文章
-        if getattr(args, 'whisper_transcribe', False):
-            videos_dir = project_dir / '04_videos'
+        # 视频模式逻辑处理
+        videos_dir = project_dir / '04_videos'
+        is_video_mode = videos_dir.exists() and any(videos_dir.iterdir())
+        keep_original_audio = False
+
+        if is_video_mode and not preview_mode:
             article_dir = project_dir / '01_article'
-            if videos_dir.exists() and any(videos_dir.iterdir()):
-                video_files = sorted([f for f in videos_dir.iterdir()
-                                    if f.suffix.lower() in ['.mp4', '.mov', '.avi', '.mkv']])
-                if video_files:
-                    article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt')) if article_dir.exists() else []
-                    if not article_files:
-                        print(f"\n🎙️  语音识别模式: 从视频提取字幕")
-                        article_path = article_dir / '文章.md'
-                        transcribe_video_with_whisper(video_files[0], article_path)
+            article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt')) if article_dir.exists() else []
+            video_files = sorted([f for f in videos_dir.iterdir()
+                                if f.suffix.lower() in ['.mp4', '.mov', '.avi', '.mkv']])
+
+            if not article_files:
+                # 路径 A: 无文章，询问是否使用语音识别
+                use_whisper = getattr(args, 'whisper_transcribe', False)
+                if not use_whisper:
+                    choice = input("\n🎙️ 未找到文章，是否使用本地语音识别生成字幕？ [Y/n]: ").strip().replace('\r', '').lower()
+                    use_whisper = choice != 'n'
+
+                if use_whisper and video_files:
+                    article_path = article_dir / '文章.md'
+                    if transcribe_video_with_whisper(video_files[0], article_path):
+                        article_files = [article_path]
+                        keep_original_audio = True
+                        print("🎬 语音识别完成，保留视频原声")
+                    else:
+                        print("❌ 语音识别失败，无法继续")
+                        return None
+                elif not article_files:
+                    print("❌ 视频模式需要文章或语音识别")
+                    return None
+            else:
+                # 有文章：询问是否保留原声（非交互模式可用 --keep-original-audio）
+                if getattr(args, 'keep_original_audio', False):
+                    keep_original_audio = True
+                else:
+                    choice = input("\n🔊 检测到视频素材，是否保留视频原声？ [y/N]: ").strip().replace('\r', '').lower()
+                    keep_original_audio = choice == 'y'
+
+                if keep_original_audio:
+                    print("🎬 保留视频原声，使用文章文本生成字幕")
+                else:
+                    print("🎬 使用 AI 配音替换原声")
 
         # 自动从文章生成音频（如果没有音频但有文章）
         # 返回音频分段信息，包含音色和图片分配
         audio_t0 = time.time()
         regenerate_audio = getattr(args, 'regenerate_audio', False)
-        audio_success, segments_info = auto_generate_audio(
-            project_dir,
-            voice=getattr(args, 'voice', 'Xiaoxiao'),
-            rate=getattr(args, 'rate', '+0%'),
-            force=regenerate_audio,
-            normalize=getattr(args, 'normalize_audio', False)
-        )
-        stage_times['audio'] = time.time() - audio_t0
+
+        if keep_original_audio:
+            # 保留原声：只解析文章获取字幕信息，不生成音频
+            article_dir = project_dir / '01_article'
+            if article_dir.exists():
+                article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
+                if article_files:
+                    try:
+                        with open(article_files[0], 'r', encoding='utf-8') as f:
+                            raw_text = f.read()
+                        raw_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
+                        text = re.sub(r'```[\s\S]*?```', '', raw_text)
+                        text = re.sub(r'`[^`]*`', '', text)
+                        text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+                        text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
+                        text = re.sub(r'<[^>]+>', '', text)
+                        text = re.sub(r'\n{3,}', '\n\n', text)
+                        parsed_segments, _ = parse_article_segments(text, default_voice=getattr(args, 'voice', 'Xiaoxiao'))
+                        segments_info = [
+                            {'voice': v, 'image': img, 'text': content, 'index': i}
+                            for i, (v, content, img) in enumerate(parsed_segments, 1)
+                        ]
+                        # 插件钩子：文章解析后
+                        plugin_results = plugin_mgr.run('post_parse_article', segments_info)
+                        if plugin_results:
+                            segments_info = plugin_results[-1]
+                    except Exception:
+                        pass
+            audio_success = True
+            stage_times['audio'] = 0
+        else:
+            audio_success, segments_info = auto_generate_audio(
+                project_dir,
+                voice=getattr(args, 'voice', 'Xiaoxiao'),
+                rate=getattr(args, 'rate', '+0%'),
+                force=regenerate_audio,
+                normalize=getattr(args, 'normalize_audio', False)
+            )
+            stage_times['audio'] = time.time() - audio_t0
 
         # 如果已有音频但没有分段信息，从文章中解析字幕文本
-        if not segments_info:
+        if not segments_info and not keep_original_audio:
             article_dir = project_dir / '01_article'
             if article_dir.exists():
                 article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
@@ -3576,6 +3649,8 @@ AI配音音色 (--voice):
                        help='批量模板生成：扫描目录下的子目录作为素材变体，每套素材+模板文章生成一个视频（矩阵号）')
     parser.add_argument('--whisper-transcribe', action='store_true',
                        help='语音识别：使用本地 faster-whisper 识别视频语音，自动生成文章和字幕（视频模式专用）')
+    parser.add_argument('--keep-original-audio', action='store_true',
+                       help='视频模式：保留视频原声，不生成 AI 配音（使用文章文本生成字幕）')
 
     args = parser.parse_args()
 
