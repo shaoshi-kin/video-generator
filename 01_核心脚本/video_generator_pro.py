@@ -167,7 +167,7 @@ PROJECT_TEMPLATES = {
         'resolution': '1080x1920',
         'fps': 30,
         'subtitle_style': 'tiktok',
-        'transition': 'zoomin',
+        'transition': 'pixelize',
         'voice': 'Xiaoxiao',
         'article': """# 美食探店
 
@@ -1364,6 +1364,47 @@ def add_watermark(
         return True
 
 
+def generate_dual_version(source_video: Path, output_video: Path, target_resolution: str) -> bool:
+    """生成相反比例版本（横屏↔竖屏），居中裁剪保留核心内容"""
+    try:
+        tw, th = map(int, target_resolution.split('x'))
+    except ValueError:
+        print(f"   ⚠️  无效目标分辨率: {target_resolution}")
+        return False
+
+    # ffmpeg: 等比放大让短边填满目标，然后居中裁剪
+    vf = (
+        f"scale=iw*max({tw}/iw\\,{th}/ih):ih*max({tw}/iw\\,{th}/ih),"
+        f"crop={tw}:{th}"
+    )
+
+    cmd = [
+        'ffmpeg', '-y', '-i', str(source_video),
+        '-vf', vf,
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'copy',
+        '-movflags', '+faststart',
+        str(output_video)
+    ]
+
+    try:
+        result = run_ffmpeg(cmd, max_retries=1, check_output=False)
+        if result.returncode != 0:
+            print(f"   ⚠️  双版本生成失败: {result.stderr[:200]}")
+            return False
+        if output_video.exists():
+            size_mb = output_video.stat().st_size / (1024 * 1024)
+            dur = get_media_duration(str(output_video))
+            print(f"   ✅ 双版本完成: {output_video.name} ({dur:.1f}s, {size_mb:.1f}MB)")
+            return True
+        return False
+    except Exception as e:
+        print(f"   ⚠️  双版本异常: {e}")
+        traceback.print_exc()
+        return False
+
+
 def process_project(
     project_dir: Path,
     args
@@ -1721,6 +1762,20 @@ def process_project(
             # 复制到输出位置
             shutil.copy(str(main_video), str(output_path))
 
+            # 双版本生成（横竖屏）
+            if getattr(args, 'dual_version', False) and not preview_mode:
+                cw, ch = map(int, args.resolution.split('x'))
+                alt_res = f"{ch}x{cw}"
+                if cw > ch:
+                    alt_name = output_path.stem + '_portrait' + output_path.suffix
+                    label = '竖屏版'
+                else:
+                    alt_name = output_path.stem + '_landscape' + output_path.suffix
+                    label = '横屏版'
+                alt_path = output_path.parent / alt_name
+                print(f"\n📱 生成双版本 ({label} {alt_res})...")
+                generate_dual_version(output_path, alt_path, alt_res)
+
             # 清理中间合并文件和状态
             for f in final_dir.glob('_partial_merged_*.mp4'):
                 try:
@@ -1858,30 +1913,46 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         modes = {'1': 'image', '2': 'video', '3': 'hybrid'}
         mode = modes.get(mode_choice, 'image')
 
-        # 2. 选择平台
-        print("\n📱 请选择目标平台:")
+        # 2. 选择平台（支持多选）
+        print("\n📱 请选择目标平台（可多选，如 1,2 或 12）:")
         print("  1) 📱 抖音/快手 - 1080×1920 (9:16)")
         print("  2) 🎬 B站/YouTube - 1920×1080 (16:9)")
         print("  3) 💬 视频号 - 1920×1080 (16:9)")
         print("  4) ⚙️  自定义")
-        platform_choice = input("选择 [1/2/3/4] (默认: 2): ").strip() or '2'
+        platform_input = input("选择 [1/2/3/4] (默认: 2): ").strip() or '2'
+
+        # 解析多选（支持 "1,2" "1 2" "12"）
+        selected = []
+        for c in platform_input.replace(',', ' ').split():
+            selected.extend(list(c.strip()))
+        selected = list(dict.fromkeys(selected))  # 去重保序
 
         platforms = {
-            '1': ('1080x1920', 'tiktok', 'zoomin', 30),
+            '1': ('1080x1920', 'tiktok', 'pixelize', 30),
             '2': ('1920x1080', 'youtube', 'fade', 30),
             '3': ('1920x1080', 'youtube', 'fade', 30),
             '4': None
         }
-        platform = platforms.get(platform_choice)
 
-        if platform is None:
+        dual_version = False
+        if '4' in selected:
             # 自定义
             resolution = input("分辨率 (如 1920x1080): ").strip() or '1920x1080'
             subtitle_style = input("字幕样式 [news/youtube/tiktok/minimal] (默认: news): ").strip() or 'news'
-            transition = input("转场效果 [fade/wipeleft/wiperight/slideleft/zoomin/none] (默认: fade): ").strip() or 'fade'
+            transition = input("转场效果 [fade/wipeleft/wiperight/slideleft/pixelize/none] (默认: fade): ").strip() or 'fade'
             fps = int(input("帧率 (默认: 30): ").strip() or '30')
         else:
-            resolution, subtitle_style, transition, fps = platform
+            # 取第一个有效平台为主配置
+            first = next((s for s in selected if s in platforms and s != '4'), '2')
+            resolution, subtitle_style, transition, fps = platforms[first]
+            # 如果选了多个不同比例的平台，开启双版本
+            unique_res = set()
+            for s in selected:
+                if s in platforms and platforms[s]:
+                    unique_res.add(platforms[s][0])
+            if len(unique_res) > 1:
+                dual_version = True
+                print(f"   🔀 已选多平台，将同时生成横竖双版本")
 
         # 3. 选择音色
         print("\n🎙️  请选择默认AI音色:")
@@ -1975,6 +2046,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'watermark': None,
         'watermark_position': 'bottom-right',
         'sfx': False,
+        'dual_version': dual_version,
         'created': str(datetime.datetime.now())
     }
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -2026,6 +2098,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
 |------|--------|----------|
 | `bgm_volume` | `0.25` | 背景音乐音量，范围 0.0~1.0，0 为静音 |
 | `sfx` | `false` | 是否启用转场音效，`true`(开启，自动读取 `02_sfx/` 目录) / `false`(关闭) |
+| `dual_version` | `{dual_version}` | 是否同时生成横竖双版本，`true`(开启) / `false`(关闭) |
 
 ## 字幕样式列表
 
@@ -2157,7 +2230,8 @@ def merge_project_config(args, project_dir: Path):
     config_keys = [
         'voice', 'resolution', 'fps', 'subtitle_style', 'transition',
         'transition_duration', 'rate', 'bgm_volume', 'subtitle', 'output',
-        'scene_fade', 'watermark', 'watermark_position', 'sfx', 'subtitle_animation'
+        'scene_fade', 'watermark', 'watermark_position', 'sfx', 'subtitle_animation',
+        'dual_version'
     ]
 
     applied = []
@@ -2339,8 +2413,7 @@ def main():
   wiperight   - 向右擦除
   slideleft   - 向左滑动
   slideright  - 向右滑动
-  zoomin      - 放大
-  zoomout     - 缩小
+  pixelize    - 像素化
   none        - 无转场
 
 AI配音音色 (--voice):
@@ -2426,6 +2499,8 @@ AI配音音色 (--voice):
     parser.add_argument('--subtitle-animation', default='none',
                        choices=['none', 'slide_up', 'fade_in'],
                        help='字幕动画效果 (默认: none)')
+    parser.add_argument('--dual-version', action='store_true',
+                       help='同时生成横竖双版本（如当前为横屏则额外生成竖屏，反之亦然）')
 
     args = parser.parse_args()
 
