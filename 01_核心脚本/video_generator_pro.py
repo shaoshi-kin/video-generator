@@ -2409,7 +2409,7 @@ def process_project(
                             # 增量更新：进一步检查输入文件和参数是否变化
                             scene_fade = getattr(args, 'scene_fade', 0.0)
                             subtitle_animation = getattr(args, 'subtitle_animation', 'none')
-                            subtitle_mode = getattr(args, 'subtitle_mode', 'full')
+                            subtitle_mode = getattr(args, 'subtitle_mode', 'sentence')
                             needs_rebuild = should_rebuild_scene(
                                 scene, scene_output, build_manifest,
                                 width, height, args.fps,
@@ -2448,7 +2448,7 @@ def process_project(
 
             scene_fade = getattr(args, 'scene_fade', 0.0)
             subtitle_animation = getattr(args, 'subtitle_animation', 'none')
-            subtitle_mode = getattr(args, 'subtitle_mode', 'full')
+            subtitle_mode = getattr(args, 'subtitle_mode', 'sentence')
             pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode, scene_fade, subtitle_animation, subtitle_mode))
 
         # 执行生成（支持并行）
@@ -3199,7 +3199,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'sfx': False,
         'dual_version': dual_version,
         'normalize_audio': False,
-        'subtitle_mode': 'full',
+        'subtitle_mode': 'sentence',
         'intro_text': None,
         'outro_text': None,
         'created': str(datetime.datetime.now())
