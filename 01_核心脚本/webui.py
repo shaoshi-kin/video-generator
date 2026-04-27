@@ -17,6 +17,10 @@ import time
 import shutil
 from pathlib import Path
 
+# 设置代理排除，避免 Gradio 内部 health check 请求被代理拦截导致 503
+os.environ.setdefault('no_proxy', 'localhost,127.0.0.1,0.0.0.0')
+os.environ.setdefault('NO_PROXY', 'localhost,127.0.0.1,0.0.0.0')
+
 # 添加同级目录到路径
 sys.path.insert(0, str(Path(__file__).parent))
 
