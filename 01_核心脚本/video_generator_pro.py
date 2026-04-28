@@ -2976,6 +2976,15 @@ def process_project(
         # 字幕样式
         subtitle_style = None
         if args.subtitle:
+            # 未显式指定时，根据分辨率自动适配
+            if args.subtitle_style is None:
+                width, height = map(int, args.resolution.split('x'))
+                if height > width:
+                    args.subtitle_style = 'tiktok'
+                    print(f"   📝 竖屏自动适配字幕样式: tiktok")
+                else:
+                    args.subtitle_style = 'news'
+                    print(f"   📝 横屏自动适配字幕样式: news")
             subtitle_style = SUBTITLE_STYLES.get(args.subtitle_style, SUBTITLE_STYLES['news'])
             print(f"📝 字幕样式: {args.subtitle_style}")
 
@@ -3986,6 +3995,9 @@ def merge_project_config(args, project_dir: Path):
             # --key=value 或 --key
             key = arg[2:].split('=')[0].replace('-', '_')
             explicit.add(key)
+            # --no-xxx 也视为 xxx 被显式指定
+            if key.startswith('no_') and key[3:] in config_keys:
+                explicit.add(key[3:])
         elif arg.startswith('-') and len(arg) == 2:
             # 短参数 -k，跳过下一个值（如果是的话）
             explicit.add(arg[1:])  # 简单映射
@@ -4201,7 +4213,7 @@ AI配音音色 (--voice):
 
   # 完整功能
   python3 video_generator_pro.py -p projects/XXX \\
-    --subtitle --subtitle-style news \\
+    --subtitle-style news \\
     --transition fade \\
     --intro intro.mp4 --outro outro.mp4 \\
     --bgm music.mp3 --bgm-volume 0.2
@@ -4216,10 +4228,13 @@ AI配音音色 (--voice):
 
     parser.add_argument('--project', '-p', help='项目路径')
     parser.add_argument('--batch', action='store_true', help='批量处理多个项目')
-    parser.add_argument('--subtitle', '-s', action='store_true', help='添加字幕')
-    parser.add_argument('--subtitle-style', default='news',
+    parser.add_argument('--subtitle', '-s', action='store_true', default=True,
+                       help='添加字幕（默认开启）')
+    parser.add_argument('--no-subtitle', action='store_false', dest='subtitle',
+                       help='关闭字幕')
+    parser.add_argument('--subtitle-style', default=None,
                        choices=list(SUBTITLE_STYLES.keys()),
-                       help='字幕样式 (默认: news)')
+                       help='字幕样式 (未指定时自动适配: 横屏 news, 竖屏 tiktok)')
     parser.add_argument('--transition', '-t', default='fade',
                        choices=list(TRANSITIONS.keys()),
                        help='转场效果 (默认: fade)')

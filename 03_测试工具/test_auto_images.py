@@ -7,6 +7,7 @@ Run with:
     python3 -m pytest 03_测试工具/test_auto_images.py -v
 """
 
+import pytest
 import sys
 import os
 import re
@@ -445,6 +446,10 @@ class TestAutoGenerateArticleFromTitle:
 
         assert result is None
 
+    @pytest.mark.skipif(
+        "KIMI_API_KEY" in os.environ or "DEEPSEEK_API_KEY" in os.environ,
+        reason="环境已配置 API key，此测试不适用"
+    )
     def test_returns_none_when_no_api_key(self, tmp_path):
         """Missing API key should return None."""
         result = vgp.auto_generate_article_from_title(
