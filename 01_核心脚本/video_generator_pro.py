@@ -3761,6 +3761,55 @@ def _write_project_config(project_dir: Path, config: dict) -> None:
 | `Yunxi` | 云希 | 年轻男声 |
 | `Yunjian` | 云健 | 新闻播报男声 |
 
+## AI 全自动功能
+
+### 一键工厂模式（无需准备素材）
+
+```bash
+# 输入标题，AI 自动生成文章 + 配图 + 视频
+python3 video_generator_pro.py --factory "马斯克收购推特内幕"
+
+# 等价于
+python3 video_generator_pro.py --auto-article "标题" --auto-images
+```
+
+### AI 自动生成文章
+
+```bash
+python3 video_generator_pro.py --auto-article "标题" --search-web
+# --search-web 启用联网搜索，获取实时数据
+```
+
+### AI 自动配图
+
+```bash
+python3 video_generator_pro.py -p {project_dir} --auto-images
+# 图片源: pollinations(免费) / unsplash / pexels
+```
+
+### 生成发布文案
+
+```bash
+python3 video_generator_pro.py -p {project_dir} --generate-copy
+```
+
+## 字幕说明
+
+- **默认开启**：`subtitle` 默认为 `true`，无需显式指定
+- **自动适配样式**：未指定 `subtitle_style` 时，横屏自动用 `news`，竖屏自动用 `tiktok`
+- **分段逻辑**：按 `。！？；，` 分段，标点本身不显示在字幕中
+- **关闭字幕**：命令行传 `--no-subtitle`
+
+## dual_version 横竖双版本
+
+```bash
+python3 video_generator_pro.py -p {project_dir} --dual-version
+```
+
+- 先按配置分辨率生成横屏版
+- 再独立生成竖屏版（交换宽高），竖屏图片存 `03_images_portrait/`
+- 输出两个文件：`xxx.mp4` 和 `xxx_portrait.mp4`
+
 ## 快速修改方法
 
 ### 方法1：直接改配置文件（推荐）
@@ -4247,8 +4296,17 @@ AI配音音色 (--voice):
   Xiaoyi    - 晓伊成熟女声
 
 示例:
+  # 一键工厂模式：输入标题，AI 自动生成文章+配图+视频
+  python3 video_generator_pro.py --factory "马斯克收购推特内幕"
+
+  # AI 自动生成文章（带联网搜索）
+  python3 video_generator_pro.py --auto-article "热点标题" --search-web
+
   # 基础用法 (自动识别图片/视频+音频)
   python3 video_generator_pro.py -p projects/XXX
+
+  # 自动配图（已有文章时）
+  python3 video_generator_pro.py -p projects/XXX --auto-images
 
   # 从文章自动生成音频并合成
   python3 video_generator_pro.py -p projects/XXX --voice Xiaoxiao --rate +0%
@@ -4262,6 +4320,9 @@ AI配音音色 (--voice):
     --transition fade \\
     --intro intro.mp4 --outro outro.mp4 \\
     --bgm music.mp3 --bgm-volume 0.2
+
+  # 横竖双版本（独立生成两套）
+  python3 video_generator_pro.py -p projects/XXX --dual-version
 
   # 批量处理（自动发现当前目录项目）
   python3 video_generator_pro.py --batch
