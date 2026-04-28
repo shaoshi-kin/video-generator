@@ -452,9 +452,14 @@ def build_sentence_subtitle_filter(
     animation: str = 'none',
     anim_duration: float = 0.5,
     wrap: bool = True,
-    max_chars_per_line: int = 14
+    max_chars_per_line: int = 14,
+    subtitle_gap: float = 0.0
 ) -> str:
-    """构建逐句字幕滤镜：按句子拆分，根据时长计算每句显示时间"""
+    """构建逐句字幕滤镜：按句子拆分，根据时长计算每句显示时间
+
+    Args:
+        subtitle_gap: 句间黑屏间隔（秒）。0=读完立即切下一句，>0=读完后黑屏N秒再出下一句
+    """
     import re
 
     # 按句子拆分（支持中文标点）
@@ -501,11 +506,14 @@ def build_sentence_subtitle_filter(
         sent_duration = max(sent_chars * char_time, 1.0)  # 最少1秒
 
         start_t = current_time
-        # 非最后一句：严格在下一句开始前消失，避免重影；最后一句保留到视频结束
+        # 非最后一句：读完之后可配置间隔（subtitle_gap）再出下一句
         if idx == len(items) - 1:
             end_t = total_duration
         else:
-            end_t = min(current_time + sent_duration, total_duration)
+            end_t = min(current_time + sent_duration - subtitle_gap, total_duration)
+            # 确保 end_t 不会早于 start_t + 0.3（每句至少显示0.3秒）
+            if end_t < start_t + 0.3:
+                end_t = start_t + 0.3
 
         # 构建单句 drawtext，带 enable 时间窗口
         ft = (
@@ -1530,7 +1538,8 @@ def create_scene_with_effects(
     preview: bool = False,
     scene_fade: float = 0.0,
     subtitle_animation: str = 'none',
-    subtitle_mode: str = 'sentence'
+    subtitle_mode: str = 'sentence',
+    subtitle_gap: float = 0.0
 ) -> bool:
     """创建单个场景视频，支持缩放效果、字幕、淡入淡出"""
 
@@ -1548,7 +1557,7 @@ def create_scene_with_effects(
                 audio_dur = get_media_duration(str(scene.audio_path))
                 vf_filter += "," + build_sentence_subtitle_filter(
                     scene.subtitle, subtitle_style, width, height, audio_dur,
-                    animation=subtitle_animation
+                    animation=subtitle_animation, subtitle_gap=subtitle_gap
                 )
             else:
                 vf_filter += "," + build_subtitle_filter(
@@ -1632,7 +1641,7 @@ def create_scene_with_effects(
                 audio_dur = get_media_duration(str(scene.audio_path))
                 vf_filter += "," + build_sentence_subtitle_filter(
                     scene.subtitle, subtitle_style, width, height, audio_dur,
-                    animation=subtitle_animation
+                    animation=subtitle_animation, subtitle_gap=subtitle_gap
                 )
             else:
                 vf_filter += "," + build_subtitle_filter(
@@ -1704,13 +1713,13 @@ def create_scene_with_effects(
 
 def _generate_scene_worker(task):
     """并行场景生成工作函数"""
-    scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation, subtitle_mode = task
+    scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation, subtitle_mode, subtitle_gap = task
     try:
         success = create_scene_with_effects(
             scene, scene_output, (width, height), fps,
             add_subtitle, subtitle_style, preview=preview,
             scene_fade=scene_fade, subtitle_animation=subtitle_animation,
-            subtitle_mode=subtitle_mode
+            subtitle_mode=subtitle_mode, subtitle_gap=subtitle_gap
         )
         media_name = None
         if scene.image_path:
@@ -2496,7 +2505,8 @@ def process_project(
             scene_fade = getattr(args, 'scene_fade', 0.0)
             subtitle_animation = getattr(args, 'subtitle_animation', 'none')
             subtitle_mode = getattr(args, 'subtitle_mode', 'sentence')
-            pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode, scene_fade, subtitle_animation, subtitle_mode))
+            subtitle_gap = getattr(args, 'subtitle_gap', 0.0)
+            pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode, scene_fade, subtitle_animation, subtitle_mode, subtitle_gap))
 
         # 执行生成（支持并行）
         total_pending = len(pending_tasks)
@@ -2537,14 +2547,14 @@ def process_project(
             # 顺序生成（预览模式也用顺序）
             pbar = tqdm(total=total_pending, desc="场景生成", unit="个", file=sys.stdout) if tqdm else None
             for task_idx, task in enumerate(pending_tasks, 1):
-                scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation, subtitle_mode = task
+                scene, scene_output, width, height, fps, add_subtitle, subtitle_style, preview, scene_fade, subtitle_animation, subtitle_mode, subtitle_gap = task
                 media = scene.image_path.name if scene.image_path else (scene.video_path.name if scene.video_path else '无素材')
                 try:
                     success = create_scene_with_effects(
                         scene, scene_output, (width, height), fps,
                         add_subtitle, subtitle_style, preview=preview,
                         scene_fade=scene_fade, subtitle_animation=subtitle_animation,
-                        subtitle_mode=subtitle_mode
+                        subtitle_mode=subtitle_mode, subtitle_gap=subtitle_gap
                     )
                     if success and scene_output.exists():
                         scene_videos.append(scene_output)
@@ -3247,6 +3257,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'dual_version': dual_version,
         'normalize_audio': False,
         'subtitle_mode': 'sentence',
+        'subtitle_gap': 0.0,
         'intro_text': None,
         'outro_text': None,
         'created': str(datetime.datetime.now())
@@ -3719,6 +3730,8 @@ AI配音音色 (--voice):
     parser.add_argument('--subtitle-mode', default='sentence',
                        choices=['full', 'sentence'],
                        help='字幕显示模式: full(整段显示) / sentence(逐句显示) (默认: sentence)')
+    parser.add_argument('--subtitle-gap', type=float, default=0.0,
+                       help='逐句字幕句间黑屏间隔(秒)。0=读完立即切下一句,>0=黑屏N秒再出下一句 (默认: 0.0)')
     parser.add_argument('--dual-version', action='store_true',
                        help='同时生成横竖双版本（如当前为横屏则额外生成竖屏，反之亦然）')
     parser.add_argument('--batch-variants-dir', metavar='PATH',
