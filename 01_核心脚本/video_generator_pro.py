@@ -280,13 +280,13 @@ class Tee:
             self.log_file.close()
 
 
-def setup_logging(project_dir: Path, preview_mode: bool = False) -> Optional[Tee]:
+def setup_logging(project_dir: Path, preview_mode: bool = False, suffix: str = "") -> Optional[Tee]:
     """设置日志：同时输出到终端和日志文件"""
     final_dir = project_dir / '07_final'
     final_dir.mkdir(exist_ok=True)
 
     now = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_name = f"generate_{now}.log"
+    log_name = f"generate_{now}{suffix}.log"
     log_path = final_dir / log_name
 
     tee = Tee(log_path)
@@ -1683,7 +1683,8 @@ def auto_generate_images_for_project(project_dir: Path,
                                       llm_api_key: str = None,
                                       llm_base_url: str = None,
                                       llm_model: str = None,
-                                      resolution: str = '1920x1080') -> int:
+                                      resolution: str = '1920x1080',
+                                      images_subdir: str = '03_images') -> int:
     """为项目文章自动配图
 
     返回: 成功插入的图片数量
@@ -1721,7 +1722,7 @@ def auto_generate_images_for_project(project_dir: Path,
         print("   ℹ️  未配置 LLM API，直接用段落内容搜索图片（效果可能略差）")
 
     # 创建图片目录
-    images_dir = project_dir / '03_images'
+    images_dir = project_dir / images_subdir
     images_dir.mkdir(exist_ok=True)
 
     # 下载图片
@@ -2072,7 +2073,11 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
                 if not image_path:
                     exts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif',
                             '.JPG', '.JPEG', '.PNG', '.WEBP', '.HEIC', '.GIF']
-                    for img_dir in ['03_images', '03_manual_images', '01_api_images']:
+                    # 如果存在竖屏图片目录，优先查找
+                    img_dirs = ['03_images', '03_manual_images', '01_api_images']
+                    if (project_dir / '03_images_portrait').exists():
+                        img_dirs.insert(0, '03_images_portrait')
+                    for img_dir in img_dirs:
                         img_dir_path = project_dir / img_dir
                         if img_dir_path.exists():
                             # 1. 尝试标准命名 scene_XX.ext
@@ -2849,13 +2854,25 @@ def should_rebuild_scene(
 
 def process_project(
     project_dir: Path,
-    args
+    args,
+    resolution_override: str = None,
+    output_suffix: str = ""
 ) -> Optional[Path]:
-    """处理单个项目"""
+    """处理单个项目
+
+    Args:
+        resolution_override: 覆盖 args.resolution，用于 dual_version 竖屏版本
+        output_suffix: 输出文件名后缀，如 '_portrait'
+    """
+
+    # 使用覆盖的分辨率（如果有）
+    orig_resolution = args.resolution
+    if resolution_override:
+        args.resolution = resolution_override
 
     tee = None
     try:
-        tee = setup_logging(project_dir, preview_mode=getattr(args, 'preview', False))
+        tee = setup_logging(project_dir, preview_mode=getattr(args, 'preview', False), suffix=output_suffix)
 
         # 预览模式
         preview_mode = getattr(args, 'preview', False)
@@ -2885,17 +2902,18 @@ def process_project(
         final_dir.mkdir(exist_ok=True)
 
         # 创建场景片段目录（保存中间产物，支持断点续传）
-        scenes_dir = project_dir / '06_scenes'
+        scenes_subdir = f"06_scenes{output_suffix}"
+        scenes_dir = project_dir / scenes_subdir
         scenes_dir.mkdir(exist_ok=True)
 
         if preview_mode:
-            output_path = final_dir / 'preview.mp4'
+            output_path = final_dir / f"preview{output_suffix}.mp4"
         else:
             if args.output:
                 output_name = args.output
             else:
                 now = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-                output_name = f"{project_dir.name}_{now}.mp4"
+                output_name = f"{project_dir.name}_{now}{output_suffix}.mp4"
             output_path = final_dir / output_name
 
         # 视频模式逻辑处理
@@ -3428,20 +3446,6 @@ def process_project(
             # 复制到输出位置
             shutil.copy(str(main_video), str(output_path))
 
-            # 双版本生成（横竖屏）
-            if getattr(args, 'dual_version', False) and not preview_mode:
-                cw, ch = map(int, args.resolution.split('x'))
-                alt_res = f"{ch}x{cw}"
-                if cw > ch:
-                    alt_name = output_path.stem + '_portrait' + output_path.suffix
-                    label = '竖屏版'
-                else:
-                    alt_name = output_path.stem + '_landscape' + output_path.suffix
-                    label = '横屏版'
-                alt_path = output_path.parent / alt_name
-                print(f"\n📱 生成双版本 ({label} {alt_res})...")
-                generate_dual_version(output_path, alt_path, alt_res)
-
             # 清理中间合并文件和状态
             for f in final_dir.glob('_partial_merged_*.mp4'):
                 try:
@@ -3523,6 +3527,9 @@ def process_project(
         if tee:
             sys.stdout = tee.terminal
             tee.close()
+        # 恢复分辨率（如果被覆盖）
+        if resolution_override:
+            args.resolution = orig_resolution
 
 
 def import_ppt_project(ppt_path: Path, project_dir: Path) -> bool:
@@ -4740,12 +4747,63 @@ AI配音音色 (--voice):
                 provider=getattr(args, 'llm_provider', 'kimi')
             )
 
-        result = process_project(project_dir, args)
+        # dual_version: 独立生成横屏+竖屏两套完整视频
+        if getattr(args, 'dual_version', False) and not getattr(args, 'preview', False):
+            # 第一遍：横屏（原始分辨率）
+            print(f"\n{'='*60}")
+            print("🎬 第一遍：横屏版本")
+            print(f"{'='*60}")
+            result = process_project(project_dir, args, output_suffix="")
 
-        if result:
-            print(f"\n▶️  播放命令: open '{result}'")
+            # 第二遍：竖屏（交换宽高）
+            if result:
+                try:
+                    cw, ch = map(int, args.resolution.split('x'))
+                    alt_res = f"{ch}x{cw}"
+                    is_portrait = ch > cw
+                    label = '竖屏版' if is_portrait else '横屏版'
+                except Exception:
+                    alt_res = '1080x1920'
+                    label = '竖屏版'
+
+                print(f"\n{'='*60}")
+                print(f"🎬 第二遍：{label} ({alt_res})")
+                print(f"{'='*60}")
+
+                # 竖屏时重新搜索竖屏图片（如果 auto-images 启用）
+                if getattr(args, 'auto_images', False):
+                    print(f"\n🎨 重新搜索竖屏图片...")
+                    img_count = auto_generate_images_for_project(
+                        project_dir,
+                        image_provider=getattr(args, 'image_provider', 'pollinations'),
+                        image_api_key=getattr(args, 'image_api_key', None),
+                        llm_provider=getattr(args, 'llm_provider', 'kimi'),
+                        llm_api_key=getattr(args, 'llm_api_key', None),
+                        llm_base_url=getattr(args, 'llm_base_url', None),
+                        llm_model=getattr(args, 'llm_model', None),
+                        resolution=alt_res,
+                        images_subdir='03_images_portrait'
+                    )
+                    if img_count == 0:
+                        print("⚠️  竖屏图片搜索未成功，尝试复用横屏图片")
+
+                result2 = process_project(project_dir, args,
+                                          resolution_override=alt_res,
+                                          output_suffix='_portrait')
+                if result2:
+                    print(f"\n▶️  横屏命令: open '{result}'")
+                    print(f"▶️  竖屏命令: open '{result2}'")
+                else:
+                    print(f"\n⚠️  竖屏版本生成失败，横屏版本已生成: {result}")
+            else:
+                print("\n❌ 横屏版本生成失败")
+                sys.exit(1)
         else:
-            sys.exit(1)
+            result = process_project(project_dir, args)
+            if result:
+                print(f"\n▶️  播放命令: open '{result}'")
+            else:
+                sys.exit(1)
 
     else:
         parser.print_help()
