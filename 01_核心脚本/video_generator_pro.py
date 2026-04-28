@@ -1631,8 +1631,8 @@ def auto_generate_images_for_project(project_dir: Path,
             keyword = re.sub(r'\s+', ' ', content[:30]).strip()
             if not keyword:
                 keyword = f"segment_{i}"
-        # 安全化文件名：只移除文件系统危险字符
-        safe_kw = re.sub(r'[\\/:*?"<>|]+', '_', keyword).strip('_')[:30]
+        # 文件名与搜索词分开：文件名只取前15字，去掉中文标点，更简洁
+        safe_kw = re.sub(r'[\\/:*?"<>|，。！？、；：""''（）【】]+', '', keyword).strip()[:15]
         if not safe_kw:
             safe_kw = f"segment_{i:02d}"
         filename = f"segment_{i+1:02d}_{safe_kw}.jpg"
