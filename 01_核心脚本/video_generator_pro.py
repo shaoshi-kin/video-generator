@@ -2498,7 +2498,109 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
                     duration=duration
                 ))
 
+    # ===== 合并没有图片的短段落到下一段 =====
+    if scenes:
+        merged_scenes = []
+        pending = []  # 没有图片的 scene 列表
+
+        for scene in scenes:
+            if not scene.image_path and not scene.image_paths:
+                # 没有图片，累积
+                pending.append(scene)
+                continue
+
+            # 有图片
+            audio_path = scene.audio_path
+            subtitle = scene.subtitle
+            duration = scene.duration
+
+            if pending:
+                # 合并所有 pending 的音频 + 当前音频
+                all_audios = [p.audio_path for p in pending if p.audio_path] + [scene.audio_path]
+                if len(all_audios) > 1:
+                    audio_dir = project_dir / '05_audio'
+                    merged_audio = audio_dir / f"scene_{scene.index:02d}_merged.mp3"
+                    if _merge_audio_files(all_audios, merged_audio):
+                        # 删除旧音频文件
+                        for p in pending:
+                            if p.audio_path and p.audio_path.exists():
+                                p.audio_path.unlink(missing_ok=True)
+                        if scene.audio_path and scene.audio_path.exists():
+                            scene.audio_path.unlink(missing_ok=True)
+                        audio_path = merged_audio
+                    else:
+                        # 合并失败，使用第一个音频
+                        audio_path = all_audios[0]
+                else:
+                    audio_path = all_audios[0]
+
+                # 合并字幕
+                subtitle = ' '.join([p.subtitle for p in pending if p.subtitle] + [scene.subtitle])
+                # 重新计算时长
+                duration = sum(p.duration for p in pending) + scene.duration
+                pending = []
+
+            merged_scenes.append(Scene(
+                index=scene.index,
+                audio_path=audio_path,
+                video_path=scene.video_path,
+                image_path=scene.image_path,
+                image_paths=scene.image_paths,
+                subtitle=subtitle,
+                duration=duration
+            ))
+
+        # 如果最后还有 pending，合并到最后一个 scene
+        if pending and merged_scenes:
+            last = merged_scenes[-1]
+            all_audios = [last.audio_path] + [p.audio_path for p in pending if p.audio_path]
+            if len(all_audios) > 1:
+                audio_dir = project_dir / '05_audio'
+                merged_audio = audio_dir / f"scene_{last.index:02d}_merged.mp3"
+                if _merge_audio_files(all_audios, merged_audio):
+                    for p in pending:
+                        if p.audio_path and p.audio_path.exists():
+                            p.audio_path.unlink(missing_ok=True)
+                    if last.audio_path and last.audio_path.exists():
+                        last.audio_path.unlink(missing_ok=True)
+                    last = Scene(
+                        index=last.index,
+                        audio_path=merged_audio,
+                        video_path=last.video_path,
+                        image_path=last.image_path,
+                        image_paths=last.image_paths,
+                        subtitle=last.subtitle + ' ' + ' '.join([p.subtitle for p in pending if p.subtitle]),
+                        duration=last.duration + sum(p.duration for p in pending)
+                    )
+                    merged_scenes[-1] = last
+
+        scenes = merged_scenes
+
     return scenes
+
+
+def _merge_audio_files(audio_paths: list, output_path: Path) -> bool:
+    """合并多个同格式 MP3 音频文件（ffmpeg concat 协议）"""
+    if len(audio_paths) == 1:
+        shutil.copy(str(audio_paths[0]), str(output_path))
+        return True
+
+    concat_str = '|'.join([str(p) for p in audio_paths])
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', f"concat:{concat_str}",
+        '-acodec', 'copy',
+        str(output_path)
+    ]
+    try:
+        result = run_ffmpeg(cmd, max_retries=1, check_output=False)
+        if result.returncode == 0 and output_path.exists():
+            return True
+        print(f"   ⚠️  音频合并失败 (code {result.returncode})")
+        return False
+    except Exception as e:
+        print(f"   ⚠️  音频合并异常: {e}")
+        return False
 
 
 def create_scene_with_effects(
