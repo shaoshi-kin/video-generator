@@ -4361,12 +4361,19 @@ AI配音音色 (--voice):
                        help='启用联网搜索：让 LLM 获取实时数据生成文章（需要 API 支持 web_search）')
     parser.add_argument('--auto-images', action='store_true',
                        help='AI 自动配图：根据文章内容自动搜索/生成图片并插入到文章中')
+    parser.add_argument('--factory', metavar='TITLE',
+                       help='AI 全自动工厂模式：输入标题，一键生成文章+配图+视频（等价于 --auto-article + --auto-images）')
     parser.add_argument('--image-provider', default='pollinations',
                        choices=['pollinations', 'unsplash', 'pexels'],
                        help='图片提供商 (默认: pollinations，免费免 key)')
     parser.add_argument('--image-api-key', help='图片 API 密钥（Unsplash/Pexels 需要，Pollinations 不需要）')
 
     args = parser.parse_args()
+
+    # --factory 模式：自动开启 --auto-article 和 --auto-images
+    if args.factory:
+        args.auto_article = args.factory
+        args.auto_images = True
 
     # 检查 ffmpeg
     if not shutil.which('ffmpeg'):
