@@ -408,7 +408,10 @@ def build_subtitle_filter(
     if wrap:
         subtitle = wrap_subtitle_text(subtitle, max_chars=max_chars_per_line)
 
-    # 对反斜杠做转义，避免 ffmpeg filter 解析器把 \n 当作换行导致 filter 断裂
+    # 处理换行符：wrap_subtitle_text 返回的 \n 字面量在某些 ffmpeg 版本中不能正确换行，
+    # 先替换为空格；同时把真正的换行符也替换为空格，避免 filter 字符串断裂
+    subtitle = subtitle.replace('\\n', ' ').replace('\n', ' ')
+    # 转义剩余的反斜杠，保护 filter 语法
     subtitle = subtitle.replace('\\', '\\\\')
 
     y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
@@ -491,7 +494,8 @@ def build_sentence_subtitle_filter(
     y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
 
     for idx, sentence in enumerate(items):
-        # 转义单引号和反斜杠，避免 ffmpeg filter 解析出错
+        # 处理换行符和反斜杠，避免 ffmpeg filter 解析出错
+        sentence = sentence.replace('\n', ' ').replace('\\n', ' ')
         sentence = sentence.replace("\\", "\\\\").replace("'", "'\\''")
         sent_chars = len(sentence)
         sent_duration = max(sent_chars * char_time, 1.0)  # 最少1秒
@@ -1029,25 +1033,68 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
 
                 # 合并音频
                 output_path = output_dir / "scene_01.mp3"
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+
+                # 验证临时文件
+                missing = [str(tf) for tf in temp_files if not tf.exists() or tf.stat().st_size == 0]
+                if missing:
+                    print(f"   ❌ 临时音频文件缺失或为空: {missing}")
+                    return False, []
+
+                # 方法1: concat demuxer（不重新编码，速度最快）
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
                     for temp_file in temp_files:
-                        escaped = str(temp_file).replace("'", "'\\''")
-                        f.write(f"file '{escaped}'\n")
+                        f.write(f"file '{temp_file}'\n")
                     concat_file = f.name
 
+                success = False
                 try:
                     cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
                            '-i', concat_file, '-c', 'copy', str(output_path)]
-                    result = run_ffmpeg(cmd, max_retries=2)
-                    success = result.returncode == 0
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode == 0:
+                        success = True
+                    else:
+                        stderr = result.stderr.replace('\n', ' ')[:300]
+                        print(f"   ⚠️  concat demuxer 失败: {stderr}")
                 finally:
-                    os.unlink(concat_file)
-                    for temp_file in temp_files:
-                        if temp_file.exists():
-                            temp_file.unlink()
+                    try:
+                        os.unlink(concat_file)
+                    except OSError:
+                        pass
+
+                # 方法2: concat filter（重新编码，更兼容）
+                if not success:
+                    print(f"   🔄 回退到 concat filter 合并...")
+                    try:
+                        inputs = []
+                        filters = []
+                        for idx, tf in enumerate(temp_files):
+                            inputs.extend(['-i', str(tf)])
+                            filters.append(f"[{idx}:a]")
+                        filters_str = ''.join(filters) + f"concat=n={len(temp_files)}:v=0:a=1[a]"
+                        cmd = ['ffmpeg', '-y'] + inputs + [
+                            '-filter_complex', filters_str,
+                            '-map', '[a]', '-c:a', 'libmp3lame', '-b:a', '192k',
+                            str(output_path)
+                        ]
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        if result.returncode == 0:
+                            success = True
+                        else:
+                            stderr = result.stderr.replace('\n', ' ')[:300]
+                            print(f"   ⚠️  concat filter 也失败: {stderr}")
+                    except Exception as e:
+                        print(f"   ⚠️  concat filter 异常: {e}")
+
+                # 清理临时文件
+                for temp_file in temp_files:
+                    if temp_file.exists():
+                        temp_file.unlink()
 
                 if success:
                     print(f"   ✅ 音频生成完成: {output_path.name} ({len(segments)} 个音色段落)")
+                else:
+                    print(f"   ❌ 音频合并失败，05_audio/ 为空")
                 segments_info.sort(key=lambda x: x['index'])
                 return success, segments_info
 
