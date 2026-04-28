@@ -1241,7 +1241,7 @@ def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str 
 
 def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str = None,
                                       base_url: str = None, model: str = None,
-                                      provider: str = 'kimi') -> bool:
+                                      provider: str = 'kimi', search_web: bool = False) -> bool:
     """根据标题直接调用 LLM 生成口播文章
 
     支持 provider:
@@ -1291,6 +1291,8 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
         return False
 
     print(f"\n✍️  正在使用 {provider.upper()} ({model}) 生成文章...")
+    if search_web:
+        print(f"   🌐 已开启联网搜索，获取实时数据...")
 
     prompt = f"""你是一位资深短视频文案专家。请根据以下标题，撰写一篇适合 AI 配音的口播文章。
 
@@ -1319,6 +1321,12 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
             'temperature': 0.7,
             'max_tokens': 2000
         }
+        # 联网搜索：Kimi 和 DeepSeek 格式不同
+        if search_web:
+            if provider == 'kimi':
+                payload['tools'] = [{'type': 'web_search', 'web_search': {'enable': True}}]
+            elif provider == 'deepseek':
+                payload['tools'] = [{'type': 'web_search'}]
         response = requests.post(
             f"{base_url.rstrip('/')}/chat/completions",
             headers=headers, json=payload, timeout=120
@@ -3859,6 +3867,8 @@ AI配音音色 (--voice):
                        help='语音识别：使用本地 faster-whisper 识别视频语音，自动生成文章和字幕（视频模式专用）')
     parser.add_argument('--auto-article', metavar='TITLE',
                        help='AI 自动生成文章：输入标题，调用 LLM 直接生成口播文章（需要配置 API Key）')
+    parser.add_argument('--search-web', action='store_true',
+                       help='启用联网搜索：让 LLM 获取实时数据生成文章（需要 API 支持 web_search）')
 
     args = parser.parse_args()
 
@@ -3901,7 +3911,8 @@ AI配音音色 (--voice):
             api_key=getattr(args, 'llm_api_key', None),
             base_url=getattr(args, 'llm_base_url', None),
             model=getattr(args, 'llm_model', None),
-            provider=getattr(args, 'llm_provider', 'kimi')
+            provider=getattr(args, 'llm_provider', 'kimi'),
+            search_web=getattr(args, 'search_web', False)
         )
         if success:
             print(f"\n{'='*60}")
