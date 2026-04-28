@@ -1151,13 +1151,13 @@ def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str 
         print("❌ 未找到 01_article/ 目录")
         return False
 
-    article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
-    if not article_files:
+    article_path = _get_latest_article(article_dir)
+    if not article_path:
         print("❌ 未找到文章文件")
         return False
 
     try:
-        with open(article_files[0], 'r', encoding='utf-8') as f:
+        with open(article_path, 'r', encoding='utf-8') as f:
             article_text = f.read()
     except Exception as e:
         print(f"❌ 读取文章失败: {e}")
@@ -1237,6 +1237,34 @@ def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str 
     if len(lines) > 15:
         print(f"   ... ({len(lines)} 行)")
     return True
+
+
+def _get_latest_article(article_dir: Path):
+    """获取 01_article 目录下最新的文章文件（按修改时间）"""
+    if not article_dir.exists():
+        return None
+    files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
+    if not files:
+        return None
+    return max(files, key=lambda f: f.stat().st_mtime)
+
+
+def _needs_realtime_search(title: str) -> bool:
+    """根据标题关键词判断是否需要联网搜索获取实时数据"""
+    realtime_keywords = [
+        '今天', '今日', '最新', '刚刚', '实时', '热点', '热搜', '突发',
+        '紧急', '快讯', '头条', '新闻', '战报', '比分', '结果', '预测',
+        '行情', '走势', '股价', '股市', '开盘', '收盘', '涨停', '跌',
+        '发布', '发布会', '上市', '发售', '开卖', '预售', '首销',
+        '地震', '台风', '暴雨', '疫情', '政策', '规定', '公告',
+        '比赛', '赛事', '决赛', '夺冠', '获胜', '进球', '世界杯',
+        '奥斯卡', '金马', '票房', '票房榜', '排行榜'
+    ]
+    t = title.lower()
+    for kw in realtime_keywords:
+        if kw in t:
+            return True
+    return False
 
 
 def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str = None,
@@ -1343,10 +1371,11 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
         print(f"❌ API 调用失败: {e}")
         return False
 
-    # 保存文章
+    # 保存文章（时间戳命名，避免覆盖）
     article_dir = output_dir / '01_article'
     article_dir.mkdir(parents=True, exist_ok=True)
-    article_path = article_dir / '文章.md'
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    article_path = article_dir / f'文章_{timestamp}.md'
 
     full_article = f"# {title}\n\n@全局:女声\n\n{article_text}\n"
 
@@ -1395,13 +1424,13 @@ def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = 
     article_dir = project_dir / '01_article'
 
     # 查找文章文件
-    article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt')) if article_dir.exists() else []
+    latest_article = _get_latest_article(article_dir)
 
     # 解析文章段落数，用于判断是否需要重新生成
     article_segment_count = 0
-    if article_files:
+    if latest_article:
         try:
-            with open(article_files[0], 'r', encoding='utf-8') as f:
+            with open(latest_article, 'r', encoding='utf-8') as f:
                 raw_text = f.read()
             raw_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
             text = re.sub(r'```[\s\S]*?```', '', raw_text)
@@ -1442,8 +1471,8 @@ def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = 
     # 创建音频目录
     audio_dir.mkdir(exist_ok=True)
 
-    # 选择第一个文章文件
-    article_path = article_files[0]
+    # 选择最新的文章文件
+    article_path = latest_article
     print(f"\n📄 发现文章: {article_path.name}")
     if video_mode:
         print("🎬 视频模式：生成单个完整音频")
@@ -2203,8 +2232,8 @@ def pre_check_project(project_dir: Path, args) -> Tuple[bool, List[str]]:
     if not article_dir.exists():
         errors.append("缺少 01_article/ 目录（无文章素材）")
     else:
-        article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
-        if not article_files:
+        latest_article = _get_latest_article(article_dir)
+        if not latest_article:
             # 视频模式下允许无文章（可使用语音识别）
             if mode == 'video':
                 warnings.append("未找到文章，视频模式可使用语音识别生成字幕")
@@ -2272,8 +2301,8 @@ def pre_check_project(project_dir: Path, args) -> Tuple[bool, List[str]]:
     print(f"{'─'*50}")
     if mode:
         print(f"   模式: {'🎬 视频模式' if mode == 'video' else '🖼️  图片模式'}")
-    if article_files:
-        print(f"   文章: {article_files[0].name}")
+    if latest_article:
+        print(f"   文章: {latest_article.name}")
     if font_found:
         print(f"   字体: ✅ 可用")
     if not warnings and not errors:
@@ -2464,31 +2493,29 @@ def process_project(
 
         if keep_original_audio:
             # 保留原声：只解析文章获取字幕信息，不生成音频
-            article_dir = project_dir / '01_article'
-            if article_dir.exists():
-                article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
-                if article_files:
-                    try:
-                        with open(article_files[0], 'r', encoding='utf-8') as f:
-                            raw_text = f.read()
-                        raw_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
-                        text = re.sub(r'```[\s\S]*?```', '', raw_text)
-                        text = re.sub(r'`[^`]*`', '', text)
-                        text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
-                        text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
-                        text = re.sub(r'<[^>]+>', '', text)
-                        text = re.sub(r'\n{3,}', '\n\n', text)
-                        parsed_segments, _ = parse_article_segments(text, default_voice=getattr(args, 'voice', 'Xiaoxiao'))
-                        segments_info = [
-                            {'voice': v, 'image': img, 'text': content, 'index': i}
-                            for i, (v, content, img) in enumerate(parsed_segments, 1)
-                        ]
-                        # 插件钩子：文章解析后
-                        plugin_results = plugin_mgr.run('post_parse_article', segments_info)
-                        if plugin_results:
-                            segments_info = plugin_results[-1]
-                    except Exception:
-                        pass
+            latest_article = _get_latest_article(project_dir / '01_article')
+            if latest_article:
+                try:
+                    with open(latest_article, 'r', encoding='utf-8') as f:
+                        raw_text = f.read()
+                    raw_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
+                    text = re.sub(r'```[\s\S]*?```', '', raw_text)
+                    text = re.sub(r'`[^`]*`', '', text)
+                    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+                    text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
+                    text = re.sub(r'<[^>]+>', '', text)
+                    text = re.sub(r'\n{3,}', '\n\n', text)
+                    parsed_segments, _ = parse_article_segments(text, default_voice=getattr(args, 'voice', 'Xiaoxiao'))
+                    segments_info = [
+                        {'voice': v, 'image': img, 'text': content, 'index': i}
+                        for i, (v, content, img) in enumerate(parsed_segments, 1)
+                    ]
+                    # 插件钩子：文章解析后
+                    plugin_results = plugin_mgr.run('post_parse_article', segments_info)
+                    if plugin_results:
+                        segments_info = plugin_results[-1]
+                except Exception:
+                    pass
             audio_success = True
             stage_times['audio'] = 0
         else:
@@ -2504,12 +2531,11 @@ def process_project(
         # 如果已有音频但没有分段信息，从文章中解析字幕文本
         if not segments_info and not keep_original_audio:
             article_dir = project_dir / '01_article'
-            if article_dir.exists():
-                article_files = list(article_dir.glob('*.md')) + list(article_dir.glob('*.txt'))
-                if article_files:
-                    try:
-                        with open(article_files[0], 'r', encoding='utf-8') as f:
-                            raw_text = f.read()
+            latest_article = _get_latest_article(article_dir)
+            if latest_article:
+                try:
+                    with open(latest_article, 'r', encoding='utf-8') as f:
+                        raw_text = f.read()
                         raw_text = raw_text.replace('\r\n', '\n').replace('\r', '\n')
                         text = re.sub(r'```[\s\S]*?```', '', raw_text)
                         text = re.sub(r'`[^`]*`', '', text)
@@ -2526,8 +2552,8 @@ def process_project(
                         plugin_results = plugin_mgr.run('post_parse_article', segments_info)
                         if plugin_results:
                             segments_info = plugin_results[-1]
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
         # 发现场景（传递图片分配信息）
         scenes = find_scenes(project_dir, image_assignments=segments_info)
@@ -3905,6 +3931,12 @@ AI配音音色 (--voice):
         for subdir in ['01_article', '02_bgm', '03_images']:
             (project_dir / subdir).mkdir(exist_ok=True)
 
+        # 智能判断是否需要联网搜索
+        search_web = getattr(args, 'search_web', False)
+        if not search_web and _needs_realtime_search(title):
+            search_web = True
+            print(f"   🧠 检测到时效性关键词，自动开启联网搜索")
+
         success = auto_generate_article_from_title(
             title,
             project_dir,
@@ -3912,7 +3944,7 @@ AI配音音色 (--voice):
             base_url=getattr(args, 'llm_base_url', None),
             model=getattr(args, 'llm_model', None),
             provider=getattr(args, 'llm_provider', 'kimi'),
-            search_web=getattr(args, 'search_web', False)
+            search_web=search_web
         )
         if success:
             print(f"\n{'='*60}")
