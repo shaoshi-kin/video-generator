@@ -1130,15 +1130,21 @@ async def generate_audio_from_article(article_path: Path, output_dir: Path, voic
         return False, []
 
 
-def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str = None, model: str = None) -> bool:
-    """根据文章内容自动生成多平台发布文案（默认调用 Kimi API）
+def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str = None,
+                          model: str = None, provider: str = 'kimi') -> bool:
+    """根据文章内容自动生成多平台发布文案
 
-    支持通过环境变量配置:
-    - KIMI_API_KEY / OPENAI_API_KEY: API 密钥
-    - LLM_BASE_URL: API 基础地址（默认 Kimi: https://api.moonshot.cn/v1）
-    - LLM_MODEL: 模型名称（默认 moonshot-v1-8k）
+    支持 provider: kimi / deepseek
+    环境变量: KIMI_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY / LLM_BASE_URL / LLM_MODEL
     """
     import requests
+
+    provider = (provider or 'kimi').lower()
+    defaults = {
+        'kimi': {'base_url': 'https://api.moonshot.cn/v1', 'model': 'moonshot-v1-8k', 'env_key': 'KIMI_API_KEY'},
+        'deepseek': {'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat', 'env_key': 'DEEPSEEK_API_KEY'}
+    }
+    cfg = defaults.get(provider, defaults['kimi'])
 
     article_dir = project_dir / '01_article'
     if not article_dir.exists():
@@ -1157,21 +1163,18 @@ def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str 
         print(f"❌ 读取文章失败: {e}")
         return False
 
-    # 清理文章文本（移除标记）
     clean_text = re.sub(r'@[^:\n]+[:：]', '', article_text)
     clean_text = re.sub(r'[#*`\n\r]', ' ', clean_text)
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()[:1500]
 
-    # 获取 API 配置（默认 Kimi）
-    api_key = api_key or os.environ.get('KIMI_API_KEY') or os.environ.get('OPENAI_API_KEY')
-    base_url = base_url or os.environ.get('LLM_BASE_URL', 'https://api.moonshot.cn/v1')
-    model = model or os.environ.get('LLM_MODEL', 'moonshot-v1-8k')
+    api_key = (api_key or os.environ.get(cfg['env_key']) or os.environ.get('OPENAI_API_KEY'))
+    base_url = base_url or os.environ.get('LLM_BASE_URL', cfg['base_url'])
+    model = model or os.environ.get('LLM_MODEL', cfg['model'])
 
     if not api_key:
-        print("\n⚠️  未配置 Kimi API 密钥")
-        print("   请设置环境变量: export KIMI_API_KEY='sk-...'")
+        print(f"\n⚠️  未配置 {provider.upper()} API 密钥")
+        print(f"   请设置环境变量: export {cfg['env_key']}='sk-...'")
         print("   或: export OPENAI_API_KEY='sk-...'")
-        print("   也可通过 --llm-api-key 参数传入")
         return False
 
     prompt = f"""你是一位资深短视频运营专家。请根据以下视频文案内容，生成适合不同平台的发布文案。
@@ -1236,111 +1239,60 @@ def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str 
     return True
 
 
-def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str = None, base_url: str = None, model: str = None) -> bool:
-    """根据标题自动搜索资料并生成口播文章
+def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str = None,
+                                      base_url: str = None, model: str = None,
+                                      provider: str = 'kimi') -> bool:
+    """根据标题直接调用 LLM 生成口播文章
 
-    流程:
-    1. DuckDuckGo 搜索相关资料
-    2. Kimi API 总结资料生成口播稿
-    3. 保存到 output_dir/01_article/文章.md
+    支持 provider:
+      - kimi:     Moonshot API (默认)
+      - deepseek: DeepSeek API
 
-    支持通过环境变量配置 API:
-    - KIMI_API_KEY / OPENAI_API_KEY
-    - LLM_BASE_URL (默认 https://api.moonshot.cn/v1)
-    - LLM_MODEL (默认 moonshot-v1-8k)
+    环境变量（优先级低于 CLI 参数）:
+      - KIMI_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY
+      - LLM_BASE_URL
+      - LLM_MODEL
     """
     import requests
 
-    print(f"\n🔍 正在搜索资料: {title}")
+    # provider 默认配置
+    provider = (provider or 'kimi').lower()
+    defaults = {
+        'kimi': {
+            'base_url': 'https://api.moonshot.cn/v1',
+            'model': 'moonshot-v1-8k',
+            'env_key': 'KIMI_API_KEY'
+        },
+        'deepseek': {
+            'base_url': 'https://api.deepseek.com/v1',
+            'model': 'deepseek-chat',
+            'env_key': 'DEEPSEEK_API_KEY'
+        }
+    }
 
-    # 1. 搜索资料（多 backend 聚合去重）
-    try:
-        try:
-            from duckduckgo_search import DDGS
-        except ImportError:
-            from ddgs import DDGS
-        all_results = []
-        seen = set()
-        backends = ['html', 'lite']
-        for be in backends:
-            be_results = []
-            last_err = None
-            for retry in range(2):
-                try:
-                    with DDGS() as ddgs:
-                        be_results = list(ddgs.text(title, backend=be, max_results=5))
-                    break
-                except TypeError:
-                    # 旧版本不支持 max_results
-                    try:
-                        with DDGS() as ddgs:
-                            be_results = list(ddgs.text(title, backend=be))[:5]
-                        break
-                    except Exception as e:
-                        last_err = str(e)[:80]
-                except Exception as e:
-                    last_err = str(e)[:80]
-                    time.sleep(0.5)
-            # 去重合并
-            for r in be_results:
-                key = (r.get('title', '') + r.get('body', '')).strip()[:200]
-                if key and key not in seen:
-                    seen.add(key)
-                    all_results.append(r)
-            if be_results:
-                print(f"   ✅ {be}: {len(be_results)} 条（累计 {len(all_results)} 条）")
-            else:
-                print(f"   ⚠️  {be} 失败: {last_err or '无结果'}")
-        results = all_results[:7]  # 最多 7 条
-        if not results:
-            print("   ⚠️  网络搜索不可用，将直接根据标题生成文章")
-    except ImportError:
-        print("   ⚠️  未安装搜索依赖，将直接根据标题生成文章")
-        results = []
-    except Exception as e:
-        print(f"   ⚠️  搜索异常: {e}，将直接根据标题生成文章")
-        results = []
-
-    # 整理搜索摘要
-    if results:
-        search_summary = []
-        for i, r in enumerate(results, 1):
-            search_summary.append(f"[{i}] {r.get('title', '')}\n{r.get('body', '')}")
-        search_text = '\n\n'.join(search_summary)
-    else:
-        search_text = "（无搜索资料，请根据标题自行发挥）"
-
-    # 2. 获取 API 配置
-    api_key = api_key or os.environ.get('KIMI_API_KEY') or os.environ.get('OPENAI_API_KEY')
-    base_url = base_url or os.environ.get('LLM_BASE_URL', 'https://api.moonshot.cn/v1')
-    model = model or os.environ.get('LLM_MODEL', 'moonshot-v1-8k')
-
-    if not api_key:
-        print("\n⚠️  未配置 Kimi API 密钥")
-        print("   请设置环境变量: export KIMI_API_KEY='sk-...'")
-        print("   或: export OPENAI_API_KEY='sk-...'")
+    if provider not in defaults:
+        print(f"⚠️  不支持的 provider: {provider}，可用: {', '.join(defaults.keys())}")
         return False
 
-    if results:
-        prompt = f"""你是一位资深短视频文案专家。请根据以下搜索资料，撰写一篇适合 AI 配音的口播文章。
+    cfg = defaults[provider]
 
-【标题】{title}
+    # 解析 API 配置：CLI 参数 > 专属环境变量 > 通用环境变量 > 默认值
+    api_key = (api_key
+               or os.environ.get(cfg['env_key'])
+               or os.environ.get('OPENAI_API_KEY'))
+    base_url = base_url or os.environ.get('LLM_BASE_URL', cfg['base_url'])
+    model = model or os.environ.get('LLM_MODEL', cfg['model'])
 
-【搜索资料】
-{search_text}
+    if not api_key:
+        print(f"\n⚠️  未配置 {provider.upper()} API 密钥")
+        print(f"   请设置环境变量: export {cfg['env_key']}='sk-...'")
+        print("   或: export OPENAI_API_KEY='sk-...'")
+        print(f"   或命令行指定: --llm-api-key 'sk-...'")
+        return False
 
-要求：
-1. 用中文撰写，口语化、有节奏感，适合朗读
-2. 总字数控制在 300-600 字（约 1-2 分钟朗读时长）
-3. 结构：开头吸引注意力 → 正文展开 → 结尾总结/引发思考
-4. 每段不要太长，用空行分段
-5. 不要出现 "大家好"、"我是 XX" 等固定开场白，直接进入内容
-6. 适当使用 "你知道吗"、"说实话"、"其实" 等口语表达增加亲和力
-7. 结尾不要添加 "关注我"、"点赞" 等引导语
+    print(f"\n✍️  正在使用 {provider.upper()} ({model}) 生成文章...")
 
-请直接输出文章正文，不需要输出标题和任何其他说明。"""
-    else:
-        prompt = f"""你是一位资深短视频文案专家。请根据以下标题，撰写一篇适合 AI 配音的口播文章。
+    prompt = f"""你是一位资深短视频文案专家。请根据以下标题，撰写一篇适合 AI 配音的口播文章。
 
 【标题】{title}
 
@@ -1356,7 +1308,6 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
 
 请直接输出文章正文，不需要输出标题和任何其他说明。"""
 
-    print("\n✍️  正在生成文章...")
     try:
         headers = {
             'Authorization': f'Bearer {api_key}',
@@ -1368,27 +1319,33 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
             'temperature': 0.7,
             'max_tokens': 2000
         }
-        response = requests.post(f"{base_url.rstrip('/')}/chat/completions", headers=headers, json=payload, timeout=120)
+        response = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers=headers, json=payload, timeout=120
+        )
         response.raise_for_status()
         data = response.json()
         article_text = data['choices'][0]['message']['content'].strip()
+    except requests.exceptions.HTTPError as e:
+        err_body = e.response.text[:200] if e.response else '未知'
+        print(f"❌ API 错误: {e.response.status_code if e.response else '?'}")
+        print(f"   详情: {err_body}")
+        return False
     except Exception as e:
         print(f"❌ API 调用失败: {e}")
         return False
 
-    # 3. 保存文章
+    # 保存文章
     article_dir = output_dir / '01_article'
     article_dir.mkdir(parents=True, exist_ok=True)
     article_path = article_dir / '文章.md'
 
-    # 添加标记头
     full_article = f"# {title}\n\n@全局:女声\n\n{article_text}\n"
 
     with open(article_path, 'w', encoding='utf-8') as f:
         f.write(full_article)
 
     print(f"✅ 文章已保存: {article_path}")
-    # 打印前3行预览
     preview_lines = [l.strip() for l in article_text.split('\n') if l.strip()][:3]
     for line in preview_lines:
         print(f"   {line[:60]}...")
@@ -3868,9 +3825,12 @@ AI配音音色 (--voice):
     parser.add_argument('--outro-text', help='片尾文字（自动生成片尾视频）')
     parser.add_argument('--generate-copy', action='store_true',
                        help='根据文章内容自动生成多平台发布文案（需配置 LLM API）')
-    parser.add_argument('--llm-api-key', help='LLM API 密钥（也可通过 OPENAI_API_KEY/KIMI_API_KEY 环境变量设置）')
-    parser.add_argument('--llm-base-url', help='LLM API 基础地址（默认: https://api.moonshot.cn/v1）')
-    parser.add_argument('--llm-model', help='LLM 模型名称（默认: moonshot-v1-8k）')
+    parser.add_argument('--llm-provider', default='kimi',
+                       choices=['kimi', 'deepseek'],
+                       help='LLM 提供商 (默认: kimi)')
+    parser.add_argument('--llm-api-key', help='LLM API 密钥（也可通过 OPENAI_API_KEY/KIMI_API_KEY/DEEPSEEK_API_KEY 环境变量设置）')
+    parser.add_argument('--llm-base-url', help='LLM API 基础地址（默认由 --llm-provider 决定）')
+    parser.add_argument('--llm-model', help='LLM 模型名称（默认由 --llm-provider 决定）')
     parser.add_argument('--import-ppt', metavar='PATH',
                        help='导入PPT/Keynote：提取图片和备注文本生成新项目')
     parser.add_argument('--queue', nargs='+', metavar='PATH',
@@ -3898,7 +3858,7 @@ AI配音音色 (--voice):
     parser.add_argument('--whisper-transcribe', action='store_true',
                        help='语音识别：使用本地 faster-whisper 识别视频语音，自动生成文章和字幕（视频模式专用）')
     parser.add_argument('--auto-article', metavar='TITLE',
-                       help='AI 自动生成文章：输入标题，自动搜索资料并生成口播文章（需要 Kimi API）')
+                       help='AI 自动生成文章：输入标题，调用 LLM 直接生成口播文章（需要配置 API Key）')
 
     args = parser.parse_args()
 
@@ -3940,7 +3900,8 @@ AI配音音色 (--voice):
             project_dir,
             api_key=getattr(args, 'llm_api_key', None),
             base_url=getattr(args, 'llm_base_url', None),
-            model=getattr(args, 'llm_model', None)
+            model=getattr(args, 'llm_model', None),
+            provider=getattr(args, 'llm_provider', 'kimi')
         )
         if success:
             print(f"\n{'='*60}")
@@ -4178,7 +4139,8 @@ AI配音音色 (--voice):
                 project_dir,
                 api_key=getattr(args, 'llm_api_key', None),
                 base_url=getattr(args, 'llm_base_url', None),
-                model=getattr(args, 'llm_model', None)
+                model=getattr(args, 'llm_model', None),
+                provider=getattr(args, 'llm_provider', 'kimi')
             )
 
         result = process_project(project_dir, args)
