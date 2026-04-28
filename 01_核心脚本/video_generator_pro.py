@@ -2978,13 +2978,17 @@ def process_project(
         if args.subtitle:
             # 未显式指定时，根据分辨率自动适配
             if args.subtitle_style is None:
-                width, height = map(int, args.resolution.split('x'))
-                if height > width:
-                    args.subtitle_style = 'tiktok'
-                    print(f"   📝 竖屏自动适配字幕样式: tiktok")
-                else:
+                try:
+                    width, height = map(int, args.resolution.split('x'))
+                    if height > width:
+                        args.subtitle_style = 'tiktok'
+                        print(f"   📝 竖屏自动适配字幕样式: tiktok")
+                    else:
+                        args.subtitle_style = 'news'
+                        print(f"   📝 横屏自动适配字幕样式: news")
+                except (ValueError, IndexError):
                     args.subtitle_style = 'news'
-                    print(f"   📝 横屏自动适配字幕样式: news")
+                    print(f"   ⚠️  分辨率格式异常，使用默认字幕样式: news")
             subtitle_style = SUBTITLE_STYLES.get(args.subtitle_style, SUBTITLE_STYLES['news'])
             print(f"📝 字幕样式: {args.subtitle_style}")
 
@@ -3987,6 +3991,11 @@ def merge_project_config(args, project_dir: Path):
 
     # 解析命令行中显式指定的参数（长参数和短参数）
     explicit = set()
+    # 短参数到长参数的映射
+    short_to_long = {
+        's': 'subtitle', 'p': 'project', 't': 'transition',
+        'b': 'bgm', 'o': 'output'
+    }
     i = 0
     argv = sys.argv[1:]
     while i < len(argv):
@@ -3999,8 +4008,9 @@ def merge_project_config(args, project_dir: Path):
             if key.startswith('no_') and key[3:] in config_keys:
                 explicit.add(key[3:])
         elif arg.startswith('-') and len(arg) == 2:
-            # 短参数 -k，跳过下一个值（如果是的话）
-            explicit.add(arg[1:])  # 简单映射
+            # 短参数 -k，映射为长参数名
+            short_key = arg[1:]
+            explicit.add(short_to_long.get(short_key, short_key))
             if i + 1 < len(argv) and not argv[i + 1].startswith('-'):
                 i += 1
         i += 1
