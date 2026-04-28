@@ -280,7 +280,9 @@ class TestAutoGenerateImagesForProject:
             save_path.write_bytes(b"dummy_image_data")
             return True
 
-        with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+        with patch.object(vgp, "_generate_global_visual_prompt", return_value={}), \
+             patch.object(vgp, "_generate_segment_storyboard", return_value=[]), \
+             patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
              patch.object(vgp, "_download_image", side_effect=mock_download):
             count = vgp.auto_generate_images_for_project(
                 project_dir,
@@ -367,7 +369,9 @@ class TestAutoGenerateImagesForProject:
             save_path.write_bytes(b"dummy")
             return True
 
-        with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+        with patch.object(vgp, "_generate_global_visual_prompt", return_value={}), \
+             patch.object(vgp, "_generate_segment_storyboard", return_value=[]), \
+             patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
              patch.object(vgp, "_download_image", side_effect=mock_download):
             count = vgp.auto_generate_images_for_project(project_dir)
 
@@ -486,7 +490,9 @@ class TestAutoGenerateArticleFromTitle:
             save_path.write_bytes(b"dummy")
             return True
 
-        with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+        with patch.object(vgp, "_generate_global_visual_prompt", return_value={}), \
+             patch.object(vgp, "_generate_segment_storyboard", return_value=[]), \
+             patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
              patch.object(vgp, "_extract_keywords_simple", return_value=""), \
              patch.object(vgp, "_download_image", side_effect=mock_download):
             count = vgp.auto_generate_images_for_project(project_dir)
@@ -521,7 +527,9 @@ class TestAutoGenerateArticleFromTitle:
             save_path.write_bytes(b"dummy")
             return True
 
-        with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+        with patch.object(vgp, "_generate_global_visual_prompt", return_value={}), \
+             patch.object(vgp, "_generate_segment_storyboard", return_value=[]), \
+             patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
              patch.object(vgp, "_extract_keywords_simple", return_value=""), \
              patch.object(vgp, "_download_image", side_effect=mock_download):
             count = vgp.auto_generate_images_for_project(project_dir)
@@ -561,7 +569,9 @@ class TestKeywordFilenameSanitization:
             save_path.write_bytes(b"dummy")
             return True
 
-        with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+        with patch.object(vgp, "_generate_global_visual_prompt", return_value={}), \
+             patch.object(vgp, "_generate_segment_storyboard", return_value=[]), \
+             patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
              patch.object(vgp, "_download_image", side_effect=mock_download):
             vgp.auto_generate_images_for_project(project_dir)
 
@@ -591,7 +601,9 @@ class TestKeywordFilenameSanitization:
             save_path.write_bytes(b"dummy")
             return True
 
-        with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+        with patch.object(vgp, "_generate_global_visual_prompt", return_value={}), \
+             patch.object(vgp, "_generate_segment_storyboard", return_value=[]), \
+             patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
              patch.object(vgp, "_extract_keywords_simple", return_value=""), \
              patch.object(vgp, "_download_image", side_effect=mock_download):
             vgp.auto_generate_images_for_project(project_dir)

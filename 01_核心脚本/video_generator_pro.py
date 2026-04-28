@@ -1553,14 +1553,192 @@ def _extract_image_keywords(segments: list, article_text: str,
     return keywords[:len(segments)]
 
 
+def _generate_global_visual_prompt(article_text: str,
+                                    api_key: str = None, base_url: str = None,
+                                    model: str = None, provider: str = 'deepseek') -> dict:
+    """调用 LLM 生成全局视觉设定书
+
+    返回: dict 包含 visual_style, color_tone, lighting, mood, characters, global_prefix_en
+    """
+    import requests
+
+    provider = (provider or 'deepseek').lower()
+    defaults = {
+        'kimi': {'base_url': 'https://api.moonshot.cn/v1', 'model': 'moonshot-v1-8k', 'env_key': 'KIMI_API_KEY'},
+        'deepseek': {'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat', 'env_key': 'DEEPSEEK_API_KEY'}
+    }
+    cfg = defaults.get(provider, defaults['deepseek'])
+    api_key = (api_key or os.environ.get(cfg['env_key']) or os.environ.get('OPENAI_API_KEY'))
+    base_url = base_url or os.environ.get('LLM_BASE_URL', cfg['base_url'])
+    model = model or os.environ.get('LLM_MODEL', cfg['model'])
+
+    if not api_key:
+        return {}
+
+    # 截断文章避免超出 token 限制
+    article_snippet = article_text[:4000]
+
+    prompt = f"""你是一位资深电影分镜师。请阅读以下文章，为视频配图生成一份"视觉设定书"。
+
+要求：
+1. 确定统一的视觉风格（如电影写实、商业纪录片、插画等）
+2. 确定统一的色调和光影氛围
+3. 如有具体人物/公司/品牌，给出一致的外貌/视觉描述
+4. 确定整体情绪基调
+5. 输出 global_prefix_en：一段英文风格前缀，用于所有 AI 生图 prompt 的开头
+
+请严格输出以下 JSON 格式（不要 markdown 代码块，不要解释）：
+{{"visual_style":"...","color_tone":"...","lighting":"...","mood":"...","characters":{{}},"global_prefix_en":"..."}}
+
+文章：
+{article_snippet}"""
+
+    try:
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        payload = {
+            'model': model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.5,
+            'max_tokens': 1500
+        }
+        response = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers=headers, json=payload, timeout=120
+        )
+        response.raise_for_status()
+        data = response.json()
+        result_text = data['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"   ⚠️  全局视觉设定生成失败: {e}")
+        return {}
+
+    # 提取 JSON
+    try:
+        # 尝试直接解析
+        result = json.loads(result_text)
+    except json.JSONDecodeError:
+        # 尝试从文本中提取 JSON
+        match = re.search(r'\{.*\}', result_text, re.DOTALL)
+        if match:
+            try:
+                result = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                print(f"   ⚠️  视觉设定 JSON 解析失败")
+                return {}
+        else:
+            print(f"   ⚠️  视觉设定返回格式异常")
+            return {}
+
+    # 确保必要字段存在
+    if 'global_prefix_en' not in result:
+        result['global_prefix_en'] = 'Cinematic realistic photography, high quality, detailed'
+    return result
+
+
+def _generate_segment_storyboard(segment_text: str, global_prompt: dict,
+                                  api_key: str = None, base_url: str = None,
+                                  model: str = None, provider: str = 'deepseek') -> list:
+    """为单个段落生成分镜脚本
+
+    返回: list of dict，每个包含 shot_type, composition, lighting, emotion, prompt_en
+    """
+    import requests
+
+    provider = (provider or 'deepseek').lower()
+    defaults = {
+        'kimi': {'base_url': 'https://api.moonshot.cn/v1', 'model': 'moonshot-v1-8k', 'env_key': 'KIMI_API_KEY'},
+        'deepseek': {'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat', 'env_key': 'DEEPSEEK_API_KEY'}
+    }
+    cfg = defaults.get(provider, defaults['deepseek'])
+    api_key = (api_key or os.environ.get(cfg['env_key']) or os.environ.get('OPENAI_API_KEY'))
+    base_url = base_url or os.environ.get('LLM_BASE_URL', cfg['base_url'])
+    model = model or os.environ.get('LLM_MODEL', cfg['model'])
+
+    if not api_key:
+        return []
+
+    global_json = json.dumps(global_prompt, ensure_ascii=False)
+
+    prompt = f"""你是一位电影分镜师。基于以下视觉设定和段落内容，生成 1-3 个分镜描述。
+
+规则：
+- 内容简单或短的段落：1 张图
+- 内容丰富、有多个场景或人物变化的段落：2-3 张图
+- 每个分镜必须包含 prompt_en（英文生图 prompt，用于 AI 生成图片）
+- prompt_en 要具体、有画面感，包含构图、人物、光影、情绪
+- 所有 prompt_en 都要以视觉设定的风格为前提
+- 不要输出 markdown 代码块
+
+请严格输出 JSON 数组格式：
+[{{"shot_type":"...","composition":"...","lighting":"...","emotion":"...","prompt_en":"..."}}]
+
+视觉设定：{global_json}
+段落内容：{segment_text}"""
+
+    try:
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        payload = {
+            'model': model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.6,
+            'max_tokens': 1500
+        }
+        response = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers=headers, json=payload, timeout=120
+        )
+        response.raise_for_status()
+        data = response.json()
+        result_text = data['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"   ⚠️  分镜生成失败: {e}")
+        return []
+
+    # 提取 JSON 数组
+    try:
+        result = json.loads(result_text)
+        if isinstance(result, dict) and 'shots' in result:
+            result = result['shots']
+        if not isinstance(result, list):
+            print(f"   ⚠️  分镜返回格式非数组")
+            return []
+    except json.JSONDecodeError:
+        match = re.search(r'\[.*\]', result_text, re.DOTALL)
+        if match:
+            try:
+                result = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                print(f"   ⚠️  分镜 JSON 解析失败")
+                return []
+        else:
+            print(f"   ⚠️  分镜返回格式异常")
+            return []
+
+    # 过滤无效分镜
+    valid = []
+    for shot in result:
+        if isinstance(shot, dict) and shot.get('prompt_en'):
+            valid.append(shot)
+    return valid[:3]  # 最多3张
+
+
 def _download_image(keyword: str, provider: str, api_key: str, save_path: Path,
-                    resolution: str = '1920x1080') -> bool:
-    """下载图片到指定路径
+                    resolution: str = '1920x1080', seed: int = None) -> bool:
+    """下载/生成图片到指定路径
 
     支持 provider:
       - pollinations: Pollinations.ai（免费，无需 key）
       - unsplash: Unsplash API（需 Access Key）
       - pexels: Pexels API（需 API Key）
+
+    Args:
+        seed: 指定生成 seed（仅 pollinations），None 时用 keyword 哈希
     """
     import requests
     import urllib.parse
@@ -1579,7 +1757,10 @@ def _download_image(keyword: str, provider: str, api_key: str, save_path: Path,
             # Pollinations.ai: 直接生成式图片，URL 编码 prompt
             import hashlib
             safe_kw = urllib.parse.quote(keyword)
-            stable_seed = int(hashlib.md5(keyword.encode('utf-8')).hexdigest(), 16) % 10000
+            if seed is not None:
+                stable_seed = seed
+            else:
+                stable_seed = int(hashlib.md5(keyword.encode('utf-8')).hexdigest(), 16) % 10000
             img_w, img_h = (1080, 1920) if is_portrait else (1920, 1080)
             url = f"https://image.pollinations.ai/prompt/{safe_kw}?width={img_w}&height={img_h}&nologo=true&seed={stable_seed}&enhance=true"
             response = requests.get(url, timeout=120)
@@ -1663,6 +1844,8 @@ def auto_generate_images_for_project(project_dir: Path,
 
     返回: 成功插入的图片数量
     """
+    import hashlib
+
     article_dir = project_dir / '01_article'
     article_path = _get_latest_article(article_dir)
     if not article_path:
@@ -1685,99 +1868,160 @@ def auto_generate_images_for_project(project_dir: Path,
     print(f"\n🎨 自动配图: 发现 {len(segments)} 个段落")
     print(f"   图片源: {image_provider}")
 
-    # 提取关键词
-    print("   🔍 正在提取图片关键词...")
-    keywords = _extract_image_keywords(
-        segments, article_text,
-        api_key=llm_api_key, base_url=llm_base_url,
-        model=llm_model, provider=llm_provider
-    )
-    if not keywords:
-        print("   ℹ️  未配置 LLM API，直接用段落内容搜索图片（效果可能略差）")
-
     # 创建图片目录
     images_dir = project_dir / images_subdir
     images_dir.mkdir(exist_ok=True)
 
-    # 下载图片 - 每个段落按句子拆分，每句一张图
+    # 判断是否有 LLM API 配置
+    provider = (llm_provider or 'deepseek').lower()
+    defaults = {
+        'kimi': {'env_key': 'KIMI_API_KEY'},
+        'deepseek': {'env_key': 'DEEPSEEK_API_KEY'}
+    }
+    cfg = defaults.get(provider, defaults['deepseek'])
+    has_llm = bool(llm_api_key or os.environ.get(cfg['env_key']) or os.environ.get('OPENAI_API_KEY'))
+
+    # 尝试加载缓存的视觉设定
+    visual_prompt_path = project_dir / '.visual_prompt.json'
+    global_prompt = None
+    if has_llm and visual_prompt_path.exists():
+        try:
+            with open(visual_prompt_path, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            # 简单校验：检查是否有文章摘要匹配
+            if cached.get('article_hash') == hashlib.md5(article_text.encode()).hexdigest()[:16]:
+                global_prompt = cached.get('prompt', {})
+                print("   📋 复用已缓存的视觉设定")
+        except Exception:
+            pass
+
+    # 生成图片
     downloaded_map = {}  # segment_idx -> [filename, ...]
-    for i, segment in enumerate(segments):
-        if len(segment) != 3:
-            print(f"   ⚠️  段落 {i} 格式异常，跳过")
-            continue
-        voice, content, _ = segment
 
-        # 段落级关键词（LLM 提取，作为备选）
-        paragraph_keyword = ""
-        if i < len(keywords) and keywords[i]:
-            paragraph_keyword = keywords[i]
+    if has_llm:
+        # ===== 分镜生图模式 =====
+        if not global_prompt:
+            print("   🎬 正在生成全局视觉设定...")
+            global_prompt = _generate_global_visual_prompt(
+                article_text,
+                api_key=llm_api_key, base_url=llm_base_url,
+                model=llm_model, provider=llm_provider
+            )
+            if global_prompt:
+                try:
+                    cache_data = {
+                        'article_hash': hashlib.md5(article_text.encode()).hexdigest()[:16],
+                        'prompt': global_prompt
+                    }
+                    with open(visual_prompt_path, 'w', encoding='utf-8') as f:
+                        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+            else:
+                print("   ⚠️  视觉设定生成失败，fallback 到关键词模式")
+
+        if global_prompt:
+            print(f"   🎨 视觉风格: {global_prompt.get('visual_style', '默认')}")
+            global_prefix = global_prompt.get('global_prefix_en', '').strip()
+
+            for i, segment in enumerate(segments):
+                if len(segment) != 3:
+                    print(f"   ⚠️  段落 {i} 格式异常，跳过")
+                    continue
+                voice, content, _ = segment
+
+                print(f"\n   📝 段落 {i+1}/{len(segments)} 分镜生成中...")
+                storyboard = _generate_segment_storyboard(
+                    content, global_prompt,
+                    api_key=llm_api_key, base_url=llm_base_url,
+                    model=llm_model, provider=llm_provider
+                )
+                if not storyboard:
+                    print(f"   ⚠️  段落 {i+1} 分镜生成失败，跳过")
+                    continue
+
+                segment_images = []
+                for j, shot in enumerate(storyboard):
+                    shot_prompt = shot.get('prompt_en', '')
+                    if not shot_prompt:
+                        continue
+
+                    # 拼接全局风格前缀
+                    if global_prefix:
+                        full_prompt = f"{global_prefix}. {shot_prompt}"
+                    else:
+                        full_prompt = shot_prompt
+
+                    # URL 长度安全截断（Pollinations URL 限制）
+                    if len(full_prompt) > 1800:
+                        full_prompt = full_prompt[:1800]
+
+                    # 生成稳定 seed
+                    seed_val = int(hashlib.md5(f"{i}_{j}".encode()).hexdigest(), 16) % 10000
+
+                    safe_kw = re.sub(r'[\\/:*?"<>|，。！？、；：""''（）【】]+', '', shot_prompt[:30]).strip()[:15]
+                    if not safe_kw:
+                        safe_kw = f"shot_{i}_{j}"
+                    filename = f"segment_{i+1:02d}_{j+1:02d}_{safe_kw}.jpg"
+                    save_path = images_dir / filename
+
+                    print(f"   📥 [{i+1}/{len(segments)}-{j+1}/{len(storyboard)}] {shot.get('shot_type', '图')} → {filename}")
+                    success = _download_image(
+                        full_prompt, image_provider, image_api_key, save_path,
+                        resolution=resolution, seed=seed_val
+                    )
+                    if success:
+                        segment_images.append(filename)
+                        print(f"      ✅ 已生成")
+                    else:
+                        print(f"      ❌ 生成失败，跳过")
+                    if i < len(segments) - 1 or j < len(storyboard) - 1:
+                        time.sleep(0.5)
+
+                if segment_images:
+                    downloaded_map[i] = segment_images
         else:
-            paragraph_keyword = _extract_keywords_simple(content)
+            # 视觉设定失败，fallback 到关键词模式
+            has_llm = False
 
-        # 按句子拆分段落内容（按 。！？； 拆分，逗号不拆）
-        sentences = re.split(r'([。！？；])', content.strip())
-        items = []
-        buf = ''
-        for s in sentences:
-            if s in '。！？；':
-                buf += s
-                if buf.strip():
-                    items.append(buf.strip())
-                buf = ''
+    if not has_llm:
+        # ===== 关键词搜索模式（fallback）=====
+        print("   🔍 正在提取图片关键词...")
+        keywords = _extract_image_keywords(
+            segments, article_text,
+            api_key=llm_api_key, base_url=llm_base_url,
+            model=llm_model, provider=llm_provider
+        )
+        if not keywords:
+            print("   ℹ️  未配置 LLM API，直接用段落内容搜索图片（效果可能略差）")
+
+        for i, segment in enumerate(segments):
+            if len(segment) != 3:
+                print(f"   ⚠️  段落 {i} 格式异常，跳过")
+                continue
+            voice, content, _ = segment
+
+            paragraph_keyword = ""
+            if i < len(keywords) and keywords[i]:
+                paragraph_keyword = keywords[i]
             else:
-                buf += s
-        if buf.strip():
-            items.append(buf.strip())
-        if not items:
-            items = [content.strip()]
+                paragraph_keyword = _extract_keywords_simple(content)
 
-        # 每2句合并为一组，每组生成一张图
-        groups = []
-        for k in range(0, len(items), 2):
-            if k + 1 < len(items):
-                groups.append(items[k] + items[k + 1])
-            else:
-                groups.append(items[k])
-
-        # 每段落最多8张图
-        max_images = 8
-        if len(groups) > max_images:
-            # 按字数均匀采样
-            step = len(groups) / max_images
-            sampled = []
-            for k in range(max_images):
-                idx = min(int(k * step), len(groups) - 1)
-                sampled.append(groups[idx])
-            groups = sampled
-
-        # 每组生成一张图片
-        segment_images = []
-        for j, group_text in enumerate(groups):
-            sent_keyword = _extract_keywords_simple(group_text)
-            if not sent_keyword:
-                sent_keyword = paragraph_keyword
-            if not sent_keyword:
-                sent_keyword = f"segment_{i}_{j}"
-
-            safe_kw = re.sub(r'[\\/:*?"<>|，。！？、；：""''（）【】]+', '', sent_keyword).strip()[:15]
+            safe_kw = re.sub(r'[\\/:*?"<>|，。！？、；：""''（）【】]+', '', paragraph_keyword).strip()[:15]
             if not safe_kw:
-                safe_kw = f"seg_{i}_{j}"
-            filename = f"segment_{i+1:02d}_{j+1:02d}_{safe_kw}.jpg"
+                safe_kw = f"seg_{i}"
+            filename = f"segment_{i+1:02d}_01_{safe_kw}.jpg"
             save_path = images_dir / filename
 
-            print(f"   📥 [{i+1}/{len(segments)}-{j+1}/{len(groups)}] {sent_keyword} → {filename}")
-            success = _download_image(sent_keyword, image_provider, image_api_key, save_path, resolution=resolution)
+            print(f"   📥 [{i+1}/{len(segments)}] {paragraph_keyword} → {filename}")
+            success = _download_image(paragraph_keyword, image_provider, image_api_key, save_path, resolution=resolution)
             if success:
-                segment_images.append(filename)
+                downloaded_map[i] = [filename]
                 print(f"      ✅ 已下载")
             else:
                 print(f"      ❌ 下载失败，跳过")
-            # 避免触发限流
-            if i < len(segments) - 1 or j < len(groups) - 1:
+            if i < len(segments) - 1:
                 time.sleep(0.5)
-
-        if segment_images:
-            downloaded_map[i] = segment_images
 
     if not downloaded_map:
         print("⚠️  没有成功下载任何图片")
