@@ -462,13 +462,13 @@ def build_sentence_subtitle_filter(
     """
     import re
 
-    # 按句子拆分（支持中文标点）
-    sentences = re.split(r'([。！？；])', subtitle.strip())
+    # 按标点拆分（句号、感叹号、问号、分号、逗号）
+    sentences = re.split(r'([。！？；，])', subtitle.strip())
     # 重组：把标点和前面的内容合并
     items = []
     buf = ''
     for s in sentences:
-        if s in '。！？；':
+        if s in '。！？；，':
             buf += s
             if buf.strip():
                 items.append(buf.strip())
@@ -480,32 +480,6 @@ def build_sentence_subtitle_filter(
 
     if not items:
         items = [subtitle.strip()]
-
-    # 长句进一步按逗号拆分，避免单句过长超出屏幕
-    threshold = max_chars_per_line * 2
-    refined = []
-    for item in items:
-        if len(item) > threshold:
-            # 按逗号拆分，保留逗号在前一段
-            parts = re.split(r'([，])', item)
-            part_buf = ''
-            for p in parts:
-                if p == '，':
-                    part_buf += p
-                    if len(part_buf) >= max_chars_per_line:
-                        refined.append(part_buf.strip())
-                        part_buf = ''
-                else:
-                    part_buf += p
-            if part_buf.strip():
-                refined.append(part_buf.strip())
-        else:
-            refined.append(item)
-    items = refined if refined else items
-
-    # 对每句做换行处理，避免超出屏幕
-    if wrap:
-        items = [wrap_subtitle_text(s, max_chars=max_chars_per_line) for s in items]
 
     # 单句直接走整段显示
     if len(items) == 1:
