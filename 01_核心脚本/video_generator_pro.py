@@ -3634,6 +3634,140 @@ def import_ppt_project(ppt_path: Path, project_dir: Path) -> bool:
     return True
 
 
+def _write_project_config(project_dir: Path, config: dict) -> None:
+    """生成项目配置文件和视频说明文档"""
+    # 1. 写入 .video_config.json
+    config_path = project_dir / '.video_config.json'
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    print(f"  ✅ .video_config.json")
+
+    # 2. 写入参数说明.md
+    mode = config.get('mode', 'image')
+    resolution = config.get('resolution', '1920x1080')
+    fps = config.get('fps', 30)
+    subtitle_style = config.get('subtitle_style', 'news')
+    transition = config.get('transition', 'fade')
+    dual_version = config.get('dual_version', False)
+
+    param_doc_path = project_dir / '参数说明.md'
+    if not param_doc_path.exists():
+        param_doc = f"""# 项目参数说明
+
+> 本文件由初始化向导自动生成，可直接编辑 `.video_config.json` 修改参数，
+> 无需每次在命令行输入。
+
+## 当前配置
+
+```json
+{json.dumps(config, ensure_ascii=False, indent=2)}
+```
+
+## 参数详解
+
+### 基础参数
+
+| 参数 | 当前值 | 中文说明 |
+|------|--------|----------|
+| `mode` | `{mode}` | 项目模式: `image`(图片+配音) / `video`(视频+配音) / `hybrid`(混合) |
+| `resolution` | `{resolution}` | 输出分辨率，如 `1920x1080`(横屏) / `1080x1920`(竖屏) |
+| `fps` | `{fps}` | 帧率，默认 30 |
+| `voice` | `{config.get('voice', 'Xiaoxiao')}` | 默认AI配音音色 |
+| `rate` | `{config.get('rate', '+18%')}` | 语速调节，如 `+10%`(加快) / `-10%`(放慢) |
+
+### 视觉参数
+
+| 参数 | 当前值 | 中文说明 |
+|------|--------|----------|
+| `subtitle` | `{config.get('subtitle', True)}` | 是否启用字幕，`true`(开启) / `false`(关闭) |
+| `subtitle_style` | `{subtitle_style}` | 字幕样式预设，见下表 |
+| `subtitle_animation` | `{config.get('subtitle_animation', 'none')}` | 字幕动画: `none`(无) / `slide_up`(上滑进入) / `fade_in`(淡入) |
+| `transition` | `{transition}` | 场景转场效果，见下表 |
+| `transition_duration` | `{config.get('transition_duration', 0.5)}` | 转场时长(秒)，建议 0.3~1.0 |
+| `scene_fade` | `{config.get('scene_fade', 0.0)}` | 场景淡入淡出(秒)，建议 0.2~0.5，0 为关闭 |
+| `watermark` | `{config.get('watermark')}` | 水印图片路径，如 `logo.png`，`null` 为不添加 |
+| `watermark_position` | `{config.get('watermark_position', 'bottom-right')}` | 水印位置: `top-left`(左上) / `top-right`(右上) / `bottom-left`(左下) / `bottom-right`(右下) / `center`(居中) |
+
+### 音频参数
+
+| 参数 | 当前值 | 中文说明 |
+|------|--------|----------|
+| `bgm_volume` | `{config.get('bgm_volume', 0.25)}` | 背景音乐音量，范围 0.0~1.0，0 为静音 |
+| `sfx` | `{config.get('sfx', False)}` | 是否启用转场音效，`true`(开启，自动读取 `02_sfx/` 目录) / `false`(关闭) |
+| `dual_version` | `{dual_version}` | 是否同时生成横竖双版本，`true`(开启) / `false`(关闭) |
+
+## 字幕样式列表
+
+| 样式名 | 中文名 | 特点 |
+|--------|--------|------|
+| `news` | 新闻 | 底部黑底白字，带边框，适合新闻/解说 |
+| `youtube` | YouTube | 底部黄色大字，黑色描边，适合英文/教程 |
+| `tiktok` | 抖音 | 居中白色大字，半透黑底，适合竖屏短视频 |
+| `minimal` | 极简 | 细边框，无背景框，适合文艺/纪录片风格 |
+
+## 转场效果列表
+
+| 效果名 | 中文名 | 效果名 | 中文名 |
+|--------|--------|--------|--------|
+| `fade` | 淡入淡出 | `dissolve` | 溶解 |
+| `wipeleft` | 向左擦除 | `wiperight` | 向右擦除 |
+| `wipeup` | 向上擦除 | `wipedown` | 向下擦除 |
+| `slideleft` | 向左滑动 | `slideright` | 向右滑动 |
+| `slideup` | 向上滑动 | `slidedown` | 向下滑动 |
+| `smoothleft` | 平滑向左 | `smoothright` | 平滑向右 |
+| `smoothup` | 平滑向上 | `smoothdown` | 平滑向下 |
+| `circlecrop` | 圆形裁剪 | `rectcrop` | 矩形裁剪 |
+| `circleclose` | 圆形收缩 | `circleopen` | 圆形展开 |
+| `horzclose` | 水平收缩 | `horzopen` | 水平展开 |
+| `vertclose` | 垂直收缩 | `vertopen` | 垂直展开 |
+| `pixelize` | 像素化 | `radial` | 径向扩散 |
+| `distance` | 距离模糊 | `fadeblack` | 黑场淡出 |
+| `fadewhite` | 白场淡出 | `diagtl` | 对角线(左上) |
+| `diagtr` | 对角线(右上) | `diagbl` | 对角线(左下) |
+| `diagbr` | 对角线(右下) | `hlslice` | 水平左切片 |
+| `hrslice` | 水平右切片 | `vuslice` | 垂直上切片 |
+| `vdslice` | 垂直下切片 | `none` | 无转场(直接切换) |
+
+## 音色列表
+
+| 音色名 | 中文名 | 特点 |
+|--------|--------|------|
+| `Xiaoxiao` | 晓晓 | 活泼温暖女声（默认女声） |
+| `Xiaoyi` | 晓伊 | 成熟稳重女声 |
+| `Yunxia` | 云夏 | 年轻女声 |
+| `Yunyang` | 云扬 | 成熟稳重男声（默认男声） |
+| `Yunxi` | 云希 | 年轻男声 |
+| `Yunjian` | 云健 | 新闻播报男声 |
+
+## 快速修改方法
+
+### 方法1：直接改配置文件（推荐）
+编辑 `.video_config.json`，修改对应值，下次运行即可生效：
+
+```bash
+python3 video_generator_pro.py -p {project_dir}
+```
+
+### 方法2：命令行覆盖
+命令行参数优先级高于配置文件，适合临时调试：
+
+```bash
+python3 video_generator_pro.py -p {project_dir} \\
+    --scene-fade 0.3 \\
+    --subtitle-style tiktok \\
+    --transition pixelize \\
+    --watermark logo.png \\
+    --watermark-position bottom-right \\
+    --sfx
+```
+
+---
+*生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
+"""
+        param_doc_path.write_text(param_doc, encoding='utf-8')
+        print(f"  ✅ 参数说明.md")
+
+
 def init_project_wizard(project_dir: Path, template: str = None) -> bool:
     """交互式项目初始化向导
 
@@ -3803,8 +3937,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
             article_path.write_text(article_templates[mode], encoding='utf-8')
         print(f"  ✅ 01_article/文章.md")
 
-    # 6. 生成项目配置文件
-    config_path = project_dir / '.video_config.json'
+    # 6. 生成项目配置文件和参数说明
     config = {
         'mode': mode,
         'resolution': resolution,
@@ -3829,127 +3962,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'outro_text': None,
         'created': str(datetime.datetime.now())
     }
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    print(f"  ✅ .video_config.json")
-
-    # 7. 生成参数说明文档
-    param_doc_path = project_dir / '参数说明.md'
-    if not param_doc_path.exists():
-        param_doc = f"""# 项目参数说明
-
-> 本文件由初始化向导自动生成，可直接编辑 `.video_config.json` 修改参数，
-> 无需每次在命令行输入。
-
-## 当前配置
-
-```json
-{json.dumps(config, ensure_ascii=False, indent=2)}
-```
-
-## 参数详解
-
-### 基础参数
-
-| 参数 | 当前值 | 中文说明 |
-|------|--------|----------|
-| `mode` | `{mode}` | 项目模式: `image`(图片+配音) / `video`(视频+配音) / `hybrid`(混合) |
-| `resolution` | `{resolution}` | 输出分辨率，如 `1920x1080`(横屏) / `1080x1920`(竖屏) |
-| `fps` | `{fps}` | 帧率，默认 30 |
-| `voice` | `{voice}` | 默认AI配音音色 |
-| `rate` | `+18%` | 语速调节，如 `+10%`(加快) / `-10%`(放慢) |
-
-### 视觉参数
-
-| 参数 | 当前值 | 中文说明 |
-|------|--------|----------|
-| `subtitle` | `true` | 是否启用字幕，`true`(开启) / `false`(关闭) |
-| `subtitle_style` | `{subtitle_style}` | 字幕样式预设，见下表 |
-| `subtitle_animation` | `none` | 字幕动画: `none`(无) / `slide_up`(上滑进入) / `fade_in`(淡入) |
-| `transition` | `{transition}` | 场景转场效果，见下表 |
-| `transition_duration` | `0.5` | 转场时长(秒)，建议 0.3~1.0 |
-| `scene_fade` | `0.0` | 场景淡入淡出(秒)，建议 0.2~0.5，0 为关闭 |
-| `watermark` | `null` | 水印图片路径，如 `logo.png`，`null` 为不添加 |
-| `watermark_position` | `bottom-right` | 水印位置: `top-left`(左上) / `top-right`(右上) / `bottom-left`(左下) / `bottom-right`(右下) / `center`(居中) |
-
-### 音频参数
-
-| 参数 | 当前值 | 中文说明 |
-|------|--------|----------|
-| `bgm_volume` | `0.25` | 背景音乐音量，范围 0.0~1.0，0 为静音 |
-| `sfx` | `false` | 是否启用转场音效，`true`(开启，自动读取 `02_sfx/` 目录) / `false`(关闭) |
-| `dual_version` | `{dual_version}` | 是否同时生成横竖双版本，`true`(开启) / `false`(关闭) |
-
-## 字幕样式列表
-
-| 样式名 | 中文名 | 特点 |
-|--------|--------|------|
-| `news` | 新闻 | 底部黑底白字，带边框，适合新闻/解说 |
-| `youtube` | YouTube | 底部黄色大字，黑色描边，适合英文/教程 |
-| `tiktok` | 抖音 | 居中白色大字，半透黑底，适合竖屏短视频 |
-| `minimal` | 极简 | 细边框，无背景框，适合文艺/纪录片风格 |
-
-## 转场效果列表
-
-| 效果名 | 中文名 | 效果名 | 中文名 |
-|--------|--------|--------|--------|
-| `fade` | 淡入淡出 | `dissolve` | 溶解 |
-| `wipeleft` | 向左擦除 | `wiperight` | 向右擦除 |
-| `wipeup` | 向上擦除 | `wipedown` | 向下擦除 |
-| `slideleft` | 向左滑动 | `slideright` | 向右滑动 |
-| `slideup` | 向上滑动 | `slidedown` | 向下滑动 |
-| `smoothleft` | 平滑向左 | `smoothright` | 平滑向右 |
-| `smoothup` | 平滑向上 | `smoothdown` | 平滑向下 |
-| `circlecrop` | 圆形裁剪 | `rectcrop` | 矩形裁剪 |
-| `circleclose` | 圆形收缩 | `circleopen` | 圆形展开 |
-| `horzclose` | 水平收缩 | `horzopen` | 水平展开 |
-| `vertclose` | 垂直收缩 | `vertopen` | 垂直展开 |
-| `pixelize` | 像素化 | `radial` | 径向扩散 |
-| `distance` | 距离模糊 | `fadeblack` | 黑场淡出 |
-| `fadewhite` | 白场淡出 | `diagtl` | 对角线(左上) |
-| `diagtr` | 对角线(右上) | `diagbl` | 对角线(左下) |
-| `diagbr` | 对角线(右下) | `hlslice` | 水平左切片 |
-| `hrslice` | 水平右切片 | `vuslice` | 垂直上切片 |
-| `vdslice` | 垂直下切片 | `none` | 无转场(直接切换) |
-
-## 音色列表
-
-| 音色名 | 中文名 | 特点 |
-|--------|--------|------|
-| `Xiaoxiao` | 晓晓 | 活泼温暖女声（默认女声） |
-| `Xiaoyi` | 晓伊 | 成熟稳重女声 |
-| `Yunxia` | 云夏 | 年轻女声 |
-| `Yunyang` | 云扬 | 成熟稳重男声（默认男声） |
-| `Yunxi` | 云希 | 年轻男声 |
-| `Yunjian` | 云健 | 新闻播报男声 |
-
-## 快速修改方法
-
-### 方法1：直接改配置文件（推荐）
-编辑 `.video_config.json`，修改对应值，下次运行即可生效：
-
-```bash
-python3 video_generator_pro.py -p {project_dir}
-```
-
-### 方法2：命令行覆盖
-命令行参数优先级高于配置文件，适合临时调试：
-
-```bash
-python3 video_generator_pro.py -p {project_dir} \
-    --scene-fade 0.3 \
-    --subtitle --subtitle-animation slide_up \
-    --transition pixelize \
-    --watermark logo.png \
-    --watermark-position bottom-right \
-    --sfx
-```
-
----
-*生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
-"""
-        param_doc_path.write_text(param_doc, encoding='utf-8')
-        print(f"  ✅ 参数说明.md")
+    _write_project_config(project_dir, config)
 
     # 7. 显示后续步骤
     print(f"\n{'='*60}")
@@ -4384,6 +4397,33 @@ AI配音音色 (--voice):
         )
         if not article_path:
             sys.exit(1)
+
+        # 生成项目配置文件和参数说明
+        config = {
+            'mode': 'image',
+            'resolution': getattr(args, 'resolution', '1920x1080'),
+            'fps': getattr(args, 'fps', 30),
+            'subtitle': getattr(args, 'subtitle', True),
+            'subtitle_style': getattr(args, 'subtitle_style', None),
+            'subtitle_animation': 'none',
+            'transition': getattr(args, 'transition', 'fade'),
+            'voice': getattr(args, 'voice', 'Xiaoxiao'),
+            'transition_duration': 0.5,
+            'rate': getattr(args, 'rate', '+18%'),
+            'scene_fade': 0.0,
+            'bgm_volume': getattr(args, 'bgm_volume', 0.25),
+            'watermark': None,
+            'watermark_position': 'bottom-right',
+            'sfx': False,
+            'dual_version': False,
+            'normalize_audio': False,
+            'subtitle_mode': 'sentence',
+            'subtitle_gap': 0.1,
+            'intro_text': None,
+            'outro_text': None,
+            'created': str(datetime.datetime.now())
+        }
+        _write_project_config(project_dir, config)
 
         # 如果同时指定了 --auto-images，执行配图并继续生成视频
         if getattr(args, 'auto_images', False):
