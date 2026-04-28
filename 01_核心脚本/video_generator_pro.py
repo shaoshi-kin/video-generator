@@ -1412,7 +1412,6 @@ def _extract_image_keywords(segments: list, article_text: str,
     model = model or os.environ.get('LLM_MODEL', cfg['model'])
 
     if not api_key:
-        print("   ⚠️  未配置 LLM API，跳过关键词提取")
         return []
 
     # 构建段落摘要（前80字）
@@ -1612,7 +1611,7 @@ def auto_generate_images_for_project(project_dir: Path,
         model=llm_model, provider=llm_provider
     )
     if not keywords:
-        print("   ⚠️  未配置 LLM API，将使用段落内容作为图片搜索词")
+        print("   ℹ️  未配置 LLM API，直接用段落内容搜索图片（效果可能略差）")
 
     # 创建图片目录
     images_dir = project_dir / '03_images'
