@@ -487,6 +487,7 @@ class TestAutoGenerateArticleFromTitle:
             return True
 
         with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+             patch.object(vgp, "_extract_keywords_simple", return_value=""), \
              patch.object(vgp, "_download_image", side_effect=mock_download):
             count = vgp.auto_generate_images_for_project(project_dir)
 
@@ -521,6 +522,7 @@ class TestAutoGenerateArticleFromTitle:
             return True
 
         with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+             patch.object(vgp, "_extract_keywords_simple", return_value=""), \
              patch.object(vgp, "_download_image", side_effect=mock_download):
             count = vgp.auto_generate_images_for_project(project_dir)
 
@@ -590,6 +592,7 @@ class TestKeywordFilenameSanitization:
             return True
 
         with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+             patch.object(vgp, "_extract_keywords_simple", return_value=""), \
              patch.object(vgp, "_download_image", side_effect=mock_download):
             vgp.auto_generate_images_for_project(project_dir)
 

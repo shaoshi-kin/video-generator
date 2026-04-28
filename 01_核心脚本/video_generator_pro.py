@@ -256,6 +256,7 @@ class Scene:
     audio_path: Optional[Path]
     video_path: Optional[Path]
     image_path: Optional[Path]
+    image_paths: Optional[List[Path]]
     subtitle: str
     duration: float
 
@@ -1698,37 +1699,77 @@ def auto_generate_images_for_project(project_dir: Path,
     images_dir = project_dir / images_subdir
     images_dir.mkdir(exist_ok=True)
 
-    # 下载图片
-    downloaded_map = {}  # segment_idx -> filename
+    # 下载图片 - 每个段落按句子拆分，每句一张图
+    downloaded_map = {}  # segment_idx -> [filename, ...]
     for i, segment in enumerate(segments):
         if len(segment) != 3:
             print(f"   ⚠️  段落 {i} 格式异常，跳过")
             continue
         voice, content, _ = segment
-        if i < len(keywords) and keywords[i]:
-            keyword = keywords[i]
-        else:
-            # 无 LLM 关键词时，用规则提取核心关键词
-            keyword = _extract_keywords_simple(content)
-            if not keyword:
-                keyword = f"segment_{i}"
-        # 文件名与搜索词分开：文件名只取前15字，去掉中文标点，更简洁
-        safe_kw = re.sub(r'[\\/:*?"<>|，。！？、；：""''（）【】]+', '', keyword).strip()[:15]
-        if not safe_kw:
-            safe_kw = f"segment_{i:02d}"
-        filename = f"segment_{i+1:02d}_{safe_kw}.jpg"
-        save_path = images_dir / filename
 
-        print(f"   📥 [{i+1}/{len(segments)}] {keyword} → {filename}")
-        success = _download_image(keyword, image_provider, image_api_key, save_path, resolution=resolution)
-        if success:
-            downloaded_map[i] = filename
-            print(f"      ✅ 已下载")
+        # 段落级关键词（LLM 提取，作为备选）
+        paragraph_keyword = ""
+        if i < len(keywords) and keywords[i]:
+            paragraph_keyword = keywords[i]
         else:
-            print(f"      ❌ 下载失败，跳过")
-        # 避免触发限流
-        if i < len(segments) - 1:
-            time.sleep(0.5)
+            paragraph_keyword = _extract_keywords_simple(content)
+
+        # 按句子拆分段落内容
+        sentences = re.split(r'([。！？；，])', content.strip())
+        items = []
+        buf = ''
+        for s in sentences:
+            if s in '。！？；，':
+                buf += s
+                if buf.strip():
+                    items.append(buf.strip())
+                buf = ''
+            else:
+                buf += s
+        if buf.strip():
+            items.append(buf.strip())
+        if not items:
+            items = [content.strip()]
+
+        # 每段落最多4张图（避免过多）
+        max_images = 4
+        if len(items) > max_images:
+            # 按字数均匀采样
+            step = len(items) / max_images
+            sampled = []
+            for k in range(max_images):
+                idx = min(int(k * step), len(items) - 1)
+                sampled.append(items[idx])
+            items = sampled
+
+        # 每句生成一张图片
+        segment_images = []
+        for j, sentence in enumerate(items):
+            sent_keyword = _extract_keywords_simple(sentence)
+            if not sent_keyword:
+                sent_keyword = paragraph_keyword
+            if not sent_keyword:
+                sent_keyword = f"segment_{i}_{j}"
+
+            safe_kw = re.sub(r'[\\/:*?"<>|，。！？、；：""''（）【】]+', '', sent_keyword).strip()[:15]
+            if not safe_kw:
+                safe_kw = f"seg_{i}_{j}"
+            filename = f"segment_{i+1:02d}_{j+1:02d}_{safe_kw}.jpg"
+            save_path = images_dir / filename
+
+            print(f"   📥 [{i+1}/{len(segments)}-{j+1}/{len(items)}] {sent_keyword} → {filename}")
+            success = _download_image(sent_keyword, image_provider, image_api_key, save_path, resolution=resolution)
+            if success:
+                segment_images.append(filename)
+                print(f"      ✅ 已下载")
+            else:
+                print(f"      ❌ 下载失败，跳过")
+            # 避免触发限流
+            if i < len(segments) - 1 or j < len(items) - 1:
+                time.sleep(0.5)
+
+        if segment_images:
+            downloaded_map[i] = segment_images
 
     if not downloaded_map:
         print("⚠️  没有成功下载任何图片")
@@ -1763,9 +1804,9 @@ def auto_generate_images_for_project(project_dir: Path,
         if voice_match:
             voice_key = voice_match.group(1)
             if voice_key in VOICE_MAP:
-                # 新段落开始，先插入图片标记
+                # 新段落开始，先插入图片标记（取第一张图作为代表）
                 if segment_idx in downloaded_map:
-                    new_lines.append(f"@图:{downloaded_map[segment_idx]}")
+                    new_lines.append(f"@图:{downloaded_map[segment_idx][0]}")
                 segment_idx += 1
                 in_segment = True
                 new_lines.append(line)
@@ -2016,6 +2057,7 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
                 audio_path=audio_path,
                 video_path=video_file,
                 image_path=None,
+                image_paths=None,
                 subtitle=subtitle_text,
                 duration=duration
             ))
@@ -2088,6 +2130,22 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
                             if image_path:
                                 break
 
+                # 查找同段落的多张图片（segment_i_*.jpg）
+                image_paths = []
+                if image_path:
+                    image_paths = [image_path]
+                else:
+                    # 仅在未指定图片时，查找 segment_{i:02d}_XX_*.jpg 格式的多张图片
+                    for img_dir in img_dirs:
+                        img_dir_path = project_dir / img_dir
+                        if not img_dir_path.exists():
+                            continue
+                        pattern = f"segment_{i:02d}_*_*.jpg"
+                        found = sorted(img_dir_path.glob(pattern))
+                        if found:
+                            image_paths = found
+                            break
+
                 # 从图片分配信息中获取字幕文本
                 subtitle_text = ''
                 if image_assignments and i <= len(image_assignments):
@@ -2097,7 +2155,8 @@ def find_scenes(project_dir: Path, image_assignments: list = None) -> List[Scene
                     index=i,
                     audio_path=audio_file,
                     video_path=None,
-                    image_path=image_path,
+                    image_path=image_paths[0] if image_paths else None,
+                    image_paths=image_paths if len(image_paths) > 1 else None,
                     subtitle=subtitle_text,
                     duration=duration
                 ))
@@ -2196,15 +2255,157 @@ def create_scene_with_effects(
                 str(output_path)
             ]
 
-    elif scene.image_path:
-        # 图片素材 - 添加缩放动画效果
+    elif scene.image_path or scene.image_paths:
+        # 图片素材 - 单图缩放动画 / 多图轮播
         duration = scene.duration
+
+        # 编码参数：预览模式快速编码，正式模式高质量
+        if preview:
+            video_preset = 'ultrafast'
+            video_crf = '28'
+            audio_bitrate = '128k'
+        else:
+            video_preset = 'veryslow'
+            video_crf = '15'
+            audio_bitrate = '256k'
+
+        # 多图轮播
+        if scene.image_paths and len(scene.image_paths) > 1:
+            # 计算每张图片显示时长
+            n_imgs = len(scene.image_paths)
+            duration_per_img = duration / n_imgs
+
+            # 创建临时目录
+            import tempfile
+            temp_dir = Path(tempfile.mkdtemp(prefix=f"slideshow_{scene.index:02d}_"))
+            temp_files = []
+
+            try:
+                # 为每张图片生成临时视频片段
+                for j, img_path in enumerate(scene.image_paths):
+                    seg_dur = duration_per_img if j < n_imgs - 1 else duration - j * duration_per_img
+                    temp_output = temp_dir / f"slide_{j:03d}.mp4"
+
+                    fade_in = f"fade=in:st=0:d=0.3," if j > 0 else ""
+                    fade_out_d = min(0.3, seg_dur * 0.5)
+                    fade_out = f"fade=out:st={max(seg_dur - fade_out_d, 0.05)}:d={fade_out_d}," if j < n_imgs - 1 else ""
+
+                    seg_cmd = [
+                        'ffmpeg', '-y', '-loop', '1', '-i', str(img_path),
+                        '-vf', f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},{fade_in}{fade_out}format=yuv420p",
+                        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+                        '-pix_fmt', 'yuv420p', '-t', str(seg_dur),
+                        '-an',
+                        str(temp_output)
+                    ]
+                    result = run_ffmpeg(seg_cmd, max_retries=1, check_output=False)
+                    if temp_output.exists():
+                        temp_files.append(temp_output)
+                    else:
+                        print(f"   ⚠️  图片片段 {j + 1} 生成失败，跳过")
+
+                if not temp_files:
+                    print(f"   ❌ 所有图片片段生成失败")
+                    return False
+
+                # 创建 concat 列表
+                list_file = temp_dir / 'list.txt'
+                with open(list_file, 'w', encoding='utf-8') as f:
+                    for tf in temp_files:
+                        f.write(f"file '{tf}'\n")
+
+                # 拼接图片片段
+                slideshow_raw = temp_dir / 'slideshow_raw.mp4'
+                concat_cmd = [
+                    'ffmpeg', '-y',
+                    '-f', 'concat', '-safe', '0', '-i', str(list_file),
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+                    '-pix_fmt', 'yuv420p',
+                    '-t', str(duration),
+                    '-an',
+                    str(slideshow_raw)
+                ]
+                result = run_ffmpeg(concat_cmd, max_retries=1, check_output=False)
+                if not slideshow_raw.exists():
+                    print(f"   ❌ 图片轮播拼接失败")
+                    return False
+
+                # 构建字幕滤镜
+                vf_filter = ""
+                if add_subtitle and subtitle_style and scene.subtitle:
+                    if subtitle_mode == 'sentence' and scene.audio_path:
+                        audio_dur = get_media_duration(str(scene.audio_path))
+                        vf_filter = build_sentence_subtitle_filter(
+                            scene.subtitle, subtitle_style, width, height, audio_dur,
+                            animation=subtitle_animation, subtitle_gap=subtitle_gap
+                        )
+                    else:
+                        vf_filter = build_subtitle_filter(
+                            scene.subtitle, subtitle_style, width, height,
+                            animation=subtitle_animation
+                        )
+                    vf_filter += build_fade_filter(duration, scene_fade)
+
+                # 最终合成：轮播视频 + 音频 + 字幕
+                if scene.audio_path:
+                    if vf_filter:
+                        final_cmd = [
+                            'ffmpeg', '-y',
+                            '-i', str(slideshow_raw),
+                            '-i', str(scene.audio_path),
+                            '-vf', vf_filter,
+                            '-c:v', 'libx264', '-preset', video_preset, '-crf', video_crf,
+                            '-pix_fmt', 'yuv420p',
+                            '-c:a', 'aac', '-b:a', audio_bitrate,
+                            '-shortest', '-t', str(duration),
+                            str(output_path)
+                        ]
+                    else:
+                        final_cmd = [
+                            'ffmpeg', '-y',
+                            '-i', str(slideshow_raw),
+                            '-i', str(scene.audio_path),
+                            '-c:v', 'copy',
+                            '-c:a', 'aac', '-b:a', audio_bitrate,
+                            '-shortest', '-t', str(duration),
+                            str(output_path)
+                        ]
+                else:
+                    if vf_filter:
+                        final_cmd = [
+                            'ffmpeg', '-y',
+                            '-i', str(slideshow_raw),
+                            '-vf', vf_filter,
+                            '-c:v', 'libx264', '-preset', video_preset, '-crf', video_crf,
+                            '-pix_fmt', 'yuv420p',
+                            '-t', str(duration),
+                            str(output_path)
+                        ]
+                    else:
+                        final_cmd = [
+                            'ffmpeg', '-y',
+                            '-i', str(slideshow_raw),
+                            '-c:v', 'copy',
+                            '-t', str(duration),
+                            str(output_path)
+                        ]
+
+                result = run_ffmpeg(final_cmd, max_retries=2, check_output=False)
+                return output_path.exists()
+
+            finally:
+                # 清理临时文件
+                import shutil
+                try:
+                    shutil.rmtree(temp_dir)
+                except OSError:
+                    pass
+
+            return False
+
+        # 单图 Ken Burns 效果
         total_frames = int(duration * fps)
-
-        # 智能裁剪：等比放大到完全覆盖目标尺寸，居中裁剪，减少黑边
         crop_vf = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,"
-
-        # Ken Burns 效果：缓慢缩放和平移
         vf_filter = (
             crop_vf +
             f"zoompan=z='min(zoom+0.0005,1.1)':d={total_frames}:"
@@ -2229,22 +2430,13 @@ def create_scene_with_effects(
         # 淡入淡出
         vf_filter += build_fade_filter(duration, scene_fade)
 
-        # 编码参数：预览模式快速编码，正式模式高质量
-        if preview:
-            video_preset = 'ultrafast'
-            video_crf = '28'
-            audio_bitrate = '128k'
-        else:
-            video_preset = 'veryslow'
-            video_crf = '15'
-            audio_bitrate = '256k'
-
         # 添加音频（如果有）
+        img_input = str(scene.image_path)
         if scene.audio_path:
             cmd = [
                 'ffmpeg', '-y',
                 '-loop', '1',
-                '-i', str(scene.image_path),
+                '-i', img_input,
                 '-i', str(scene.audio_path),
                 '-vf', vf_filter,
                 '-c:v', 'libx264',
@@ -2262,7 +2454,7 @@ def create_scene_with_effects(
             cmd = [
                 'ffmpeg', '-y',
                 '-loop', '1',
-                '-i', str(scene.image_path),
+                '-i', img_input,
                 '-vf', vf_filter,
                 '-c:v', 'libx264',
                 '-preset', video_preset,
