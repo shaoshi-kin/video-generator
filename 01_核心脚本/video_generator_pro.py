@@ -1142,12 +1142,12 @@ def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str 
     """
     import requests
 
-    provider = (provider or 'kimi').lower()
+    provider = (provider or 'deepseek').lower()
     defaults = {
         'kimi': {'base_url': 'https://api.moonshot.cn/v1', 'model': 'moonshot-v1-8k', 'env_key': 'KIMI_API_KEY'},
         'deepseek': {'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat', 'env_key': 'DEEPSEEK_API_KEY'}
     }
-    cfg = defaults.get(provider, defaults['kimi'])
+    cfg = defaults.get(provider, defaults['deepseek'])
 
     article_dir = project_dir / '01_article'
     if not article_dir.exists():
@@ -1289,7 +1289,7 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
     import requests
 
     # provider 默认配置
-    provider = (provider or 'kimi').lower()
+    provider = (provider or 'deepseek').lower()
     defaults = {
         'kimi': {
             'base_url': 'https://api.moonshot.cn/v1',
@@ -1468,12 +1468,12 @@ def _extract_image_keywords(segments: list, article_text: str,
     """
     import requests
 
-    provider = (provider or 'kimi').lower()
+    provider = (provider or 'deepseek').lower()
     defaults = {
         'kimi': {'base_url': 'https://api.moonshot.cn/v1', 'model': 'moonshot-v1-8k', 'env_key': 'KIMI_API_KEY'},
         'deepseek': {'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat', 'env_key': 'DEEPSEEK_API_KEY'}
     }
-    cfg = defaults.get(provider, defaults['kimi'])
+    cfg = defaults.get(provider, defaults['deepseek'])
 
     api_key = (api_key or os.environ.get(cfg['env_key']) or os.environ.get('OPENAI_API_KEY'))
     base_url = base_url or os.environ.get('LLM_BASE_URL', cfg['base_url'])
@@ -4323,9 +4323,9 @@ AI配音音色 (--voice):
     parser.add_argument('--outro-text', help='片尾文字（自动生成片尾视频）')
     parser.add_argument('--generate-copy', action='store_true',
                        help='根据文章内容自动生成多平台发布文案（需配置 LLM API）')
-    parser.add_argument('--llm-provider', default='kimi',
+    parser.add_argument('--llm-provider', default='deepseek',
                        choices=['kimi', 'deepseek'],
-                       help='LLM 提供商 (默认: kimi)')
+                       help='LLM 提供商 (默认: deepseek)')
     parser.add_argument('--llm-api-key', help='LLM API 密钥（也可通过 OPENAI_API_KEY/KIMI_API_KEY/DEEPSEEK_API_KEY 环境变量设置）')
     parser.add_argument('--llm-base-url', help='LLM API 基础地址（默认由 --llm-provider 决定）')
     parser.add_argument('--llm-model', help='LLM 模型名称（默认由 --llm-provider 决定）')
@@ -4421,7 +4421,7 @@ AI配音音色 (--voice):
             api_key=getattr(args, 'llm_api_key', None),
             base_url=getattr(args, 'llm_base_url', None),
             model=getattr(args, 'llm_model', None),
-            provider=getattr(args, 'llm_provider', 'kimi'),
+            provider=getattr(args, 'llm_provider', 'deepseek'),
             search_web=search_web
         )
         if not article_path:
@@ -4464,7 +4464,7 @@ AI配音音色 (--voice):
                 project_dir,
                 image_provider=getattr(args, 'image_provider', 'pollinations'),
                 image_api_key=getattr(args, 'image_api_key', None),
-                llm_provider=getattr(args, 'llm_provider', 'kimi'),
+                llm_provider=getattr(args, 'llm_provider', 'deepseek'),
                 llm_api_key=getattr(args, 'llm_api_key', None),
                 llm_base_url=getattr(args, 'llm_base_url', None),
                 llm_model=getattr(args, 'llm_model', None),
@@ -4703,7 +4703,7 @@ AI配音音色 (--voice):
                 project_dir,
                 image_provider=getattr(args, 'image_provider', 'pollinations'),
                 image_api_key=getattr(args, 'image_api_key', None),
-                llm_provider=getattr(args, 'llm_provider', 'kimi'),
+                llm_provider=getattr(args, 'llm_provider', 'deepseek'),
                 llm_api_key=getattr(args, 'llm_api_key', None),
                 llm_base_url=getattr(args, 'llm_base_url', None),
                 llm_model=getattr(args, 'llm_model', None),
@@ -4724,7 +4724,7 @@ AI配音音色 (--voice):
                 api_key=getattr(args, 'llm_api_key', None),
                 base_url=getattr(args, 'llm_base_url', None),
                 model=getattr(args, 'llm_model', None),
-                provider=getattr(args, 'llm_provider', 'kimi')
+                provider=getattr(args, 'llm_provider', 'deepseek')
             )
 
         # dual_version: 独立生成横屏+竖屏两套完整视频
@@ -4757,7 +4757,7 @@ AI配音音色 (--voice):
                         project_dir,
                         image_provider=getattr(args, 'image_provider', 'pollinations'),
                         image_api_key=getattr(args, 'image_api_key', None),
-                        llm_provider=getattr(args, 'llm_provider', 'kimi'),
+                        llm_provider=getattr(args, 'llm_provider', 'deepseek'),
                         llm_api_key=getattr(args, 'llm_api_key', None),
                         llm_base_url=getattr(args, 'llm_base_url', None),
                         llm_model=getattr(args, 'llm_model', None),
