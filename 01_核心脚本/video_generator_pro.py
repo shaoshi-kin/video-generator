@@ -1236,6 +1236,121 @@ def generate_publish_copy(project_dir: Path, api_key: str = None, base_url: str 
     return True
 
 
+def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str = None, base_url: str = None, model: str = None) -> bool:
+    """根据标题自动搜索资料并生成口播文章
+
+    流程:
+    1. DuckDuckGo 搜索相关资料
+    2. Kimi API 总结资料生成口播稿
+    3. 保存到 output_dir/01_article/文章.md
+
+    支持通过环境变量配置 API:
+    - KIMI_API_KEY / OPENAI_API_KEY
+    - LLM_BASE_URL (默认 https://api.moonshot.cn/v1)
+    - LLM_MODEL (默认 moonshot-v1-8k)
+    """
+    import requests
+
+    print(f"\n🔍 正在搜索资料: {title}")
+
+    # 1. 搜索资料
+    try:
+        from duckduckgo_search import DDGS
+        results = []
+        backends = ['api', 'html', 'lite']
+        for be in backends:
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(title, backend=be))[:5]
+                if results:
+                    print(f"   ✅ 通过 {be} 找到 {len(results)} 条资料")
+                    break
+            except Exception:
+                continue
+        if not results:
+            print("   ❌ 未找到相关资料")
+            return False
+    except ImportError:
+        print("   ❌ 未安装 duckduckgo-search，请运行: pip install duckduckgo-search")
+        return False
+    except Exception as e:
+        print(f"   ❌ 搜索失败: {e}")
+        return False
+
+    # 整理搜索摘要
+    search_summary = []
+    for i, r in enumerate(results, 1):
+        search_summary.append(f"[{i}] {r.get('title', '')}\n{r.get('body', '')}")
+    search_text = '\n\n'.join(search_summary)
+
+    # 2. 获取 API 配置
+    api_key = api_key or os.environ.get('KIMI_API_KEY') or os.environ.get('OPENAI_API_KEY')
+    base_url = base_url or os.environ.get('LLM_BASE_URL', 'https://api.moonshot.cn/v1')
+    model = model or os.environ.get('LLM_MODEL', 'moonshot-v1-8k')
+
+    if not api_key:
+        print("\n⚠️  未配置 Kimi API 密钥")
+        print("   请设置环境变量: export KIMI_API_KEY='sk-...'")
+        print("   或: export OPENAI_API_KEY='sk-...'")
+        return False
+
+    prompt = f"""你是一位资深短视频文案专家。请根据以下搜索资料，撰写一篇适合 AI 配音的口播文章。
+
+【标题】{title}
+
+【搜索资料】
+{search_text}
+
+要求：
+1. 用中文撰写，口语化、有节奏感，适合朗读
+2. 总字数控制在 300-600 字（约 1-2 分钟朗读时长）
+3. 结构：开头吸引注意力 → 正文展开 → 结尾总结/引发思考
+4. 每段不要太长，用空行分段
+5. 不要出现 "大家好"、"我是 XX" 等固定开场白，直接进入内容
+6. 适当使用 "你知道吗"、"说实话"、"其实" 等口语表达增加亲和力
+7. 结尾不要添加 "关注我"、"点赞" 等引导语
+
+请直接输出文章正文，不需要输出标题和任何其他说明。"""
+
+    print("\n✍️  正在生成文章...")
+    try:
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        payload = {
+            'model': model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.7,
+            'max_tokens': 2000
+        }
+        response = requests.post(f"{base_url.rstrip('/')}/chat/completions", headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        data = response.json()
+        article_text = data['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"❌ API 调用失败: {e}")
+        return False
+
+    # 3. 保存文章
+    article_dir = output_dir / '01_article'
+    article_dir.mkdir(parents=True, exist_ok=True)
+    article_path = article_dir / '文章.md'
+
+    # 添加标记头
+    full_article = f"# {title}\n\n@全局:女声\n\n{article_text}\n"
+
+    with open(article_path, 'w', encoding='utf-8') as f:
+        f.write(full_article)
+
+    print(f"✅ 文章已保存: {article_path}")
+    # 打印前3行预览
+    preview_lines = [l.strip() for l in article_text.split('\n') if l.strip()][:3]
+    for line in preview_lines:
+        print(f"   {line[:60]}...")
+    return True
+
+
 def normalize_audio_loudness(input_path: Path, output_path: Path, target_lufs: float = -14.0) -> bool:
     """音频响度标准化（YouTube 标准 -14 LUFS）"""
     cmd = [
@@ -3738,6 +3853,8 @@ AI配音音色 (--voice):
                        help='批量模板生成：扫描目录下的子目录作为素材变体，每套素材+模板文章生成一个视频（矩阵号）')
     parser.add_argument('--whisper-transcribe', action='store_true',
                        help='语音识别：使用本地 faster-whisper 识别视频语音，自动生成文章和字幕（视频模式专用）')
+    parser.add_argument('--auto-article', metavar='TITLE',
+                       help='AI 自动生成文章：输入标题，自动搜索资料并生成口播文章（需要 Kimi API）')
 
     args = parser.parse_args()
 
@@ -3755,6 +3872,46 @@ AI配音音色 (--voice):
         if init_project_wizard(project_dir, template=args.template):
             if input("\n是否立即检查素材? [y/N]: ").strip().replace('\r', '').lower() == 'y':
                 check_project_materials(project_dir)
+        sys.exit(0)
+
+    # AI 自动生成文章
+    if args.auto_article:
+        title = args.auto_article.strip()
+        if args.project:
+            project_dir = Path(args.project)
+        else:
+            import re
+            safe_name = re.sub(r'[^\w\u4e00-\u9fff]+', '_', title)[:30].strip('_')
+            if not safe_name:
+                safe_name = 'auto_article'
+            project_dir = Path('projects') / safe_name
+
+        project_dir.mkdir(parents=True, exist_ok=True)
+        # 确保标准目录结构存在
+        for subdir in ['01_article', '02_bgm', '03_images']:
+            (project_dir / subdir).mkdir(exist_ok=True)
+
+        success = auto_generate_article_from_title(
+            title,
+            project_dir,
+            api_key=getattr(args, 'llm_api_key', None),
+            base_url=getattr(args, 'llm_base_url', None),
+            model=getattr(args, 'llm_model', None)
+        )
+        if success:
+            print(f"\n{'='*60}")
+            print("🎉 第一阶段完成！")
+            print(f"{'='*60}")
+            print(f"   项目路径: {project_dir}")
+            print(f"   文章文件: {project_dir}/01_article/文章.md")
+            print(f"\n   📋 下一步:")
+            print(f"   1. 放入图片到 {project_dir}/03_images/")
+            print(f"   2. 放入 BGM 到 {project_dir}/02_bgm/")
+            print(f"   3. 生成视频:")
+            print(f"      python3 01_核心脚本/video_generator_pro.py -p {project_dir}")
+            print(f"{'='*60}")
+        else:
+            sys.exit(1)
         sys.exit(0)
 
     # PPT导入
