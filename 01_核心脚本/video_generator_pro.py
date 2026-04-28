@@ -453,12 +453,12 @@ def build_sentence_subtitle_filter(
     anim_duration: float = 0.5,
     wrap: bool = True,
     max_chars_per_line: int = 14,
-    subtitle_gap: float = 0.0
+    subtitle_gap: float = 0.1
 ) -> str:
     """构建逐句字幕滤镜：按句子拆分，根据时长计算每句显示时间
 
     Args:
-        subtitle_gap: 句间黑屏间隔（秒）。0=读完立即切下一句，>0=读完后黑屏N秒再出下一句
+        subtitle_gap: 句间黑屏间隔（秒）。0=无缝衔接下一句，>0=读完后黑屏N秒再出下一句（默认0.1秒）
     """
     import re
 
@@ -1539,7 +1539,7 @@ def create_scene_with_effects(
     scene_fade: float = 0.0,
     subtitle_animation: str = 'none',
     subtitle_mode: str = 'sentence',
-    subtitle_gap: float = 0.0
+    subtitle_gap: float = 0.1
 ) -> bool:
     """创建单个场景视频，支持缩放效果、字幕、淡入淡出"""
 
@@ -2505,7 +2505,7 @@ def process_project(
             scene_fade = getattr(args, 'scene_fade', 0.0)
             subtitle_animation = getattr(args, 'subtitle_animation', 'none')
             subtitle_mode = getattr(args, 'subtitle_mode', 'sentence')
-            subtitle_gap = getattr(args, 'subtitle_gap', 0.0)
+            subtitle_gap = getattr(args, 'subtitle_gap', 0.1)
             pending_tasks.append((scene, scene_output, width, height, args.fps, args.subtitle, subtitle_style, preview_mode, scene_fade, subtitle_animation, subtitle_mode, subtitle_gap))
 
         # 执行生成（支持并行）
@@ -3257,7 +3257,7 @@ def init_project_wizard(project_dir: Path, template: str = None) -> bool:
         'dual_version': dual_version,
         'normalize_audio': False,
         'subtitle_mode': 'sentence',
-        'subtitle_gap': 0.0,
+        'subtitle_gap': 0.1,
         'intro_text': None,
         'outro_text': None,
         'created': str(datetime.datetime.now())
@@ -3730,8 +3730,8 @@ AI配音音色 (--voice):
     parser.add_argument('--subtitle-mode', default='sentence',
                        choices=['full', 'sentence'],
                        help='字幕显示模式: full(整段显示) / sentence(逐句显示) (默认: sentence)')
-    parser.add_argument('--subtitle-gap', type=float, default=0.0,
-                       help='逐句字幕句间黑屏间隔(秒)。0=读完立即切下一句,>0=黑屏N秒再出下一句 (默认: 0.0)')
+    parser.add_argument('--subtitle-gap', type=float, default=0.1,
+                       help='逐句字幕句间黑屏间隔(秒)。0=无缝衔接下一句,>0=读完后黑屏N秒再出下一句 (默认: 0.1)')
     parser.add_argument('--dual-version', action='store_true',
                        help='同时生成横竖双版本（如当前为横屏则额外生成竖屏，反之亦然）')
     parser.add_argument('--batch-variants-dir', metavar='PATH',
