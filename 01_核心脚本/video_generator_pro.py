@@ -1714,12 +1714,12 @@ def auto_generate_images_for_project(project_dir: Path,
         else:
             paragraph_keyword = _extract_keywords_simple(content)
 
-        # 按句子拆分段落内容
-        sentences = re.split(r'([。！？；，])', content.strip())
+        # 按句子拆分段落内容（按 。！？； 拆分，逗号不拆）
+        sentences = re.split(r'([。！？；])', content.strip())
         items = []
         buf = ''
         for s in sentences:
-            if s in '。！？；，':
+            if s in '。！？；':
                 buf += s
                 if buf.strip():
                     items.append(buf.strip())
@@ -1731,21 +1731,29 @@ def auto_generate_images_for_project(project_dir: Path,
         if not items:
             items = [content.strip()]
 
-        # 每段落最多4张图（避免过多）
-        max_images = 4
-        if len(items) > max_images:
+        # 每2句合并为一组，每组生成一张图
+        groups = []
+        for k in range(0, len(items), 2):
+            if k + 1 < len(items):
+                groups.append(items[k] + items[k + 1])
+            else:
+                groups.append(items[k])
+
+        # 每段落最多8张图
+        max_images = 8
+        if len(groups) > max_images:
             # 按字数均匀采样
-            step = len(items) / max_images
+            step = len(groups) / max_images
             sampled = []
             for k in range(max_images):
-                idx = min(int(k * step), len(items) - 1)
-                sampled.append(items[idx])
-            items = sampled
+                idx = min(int(k * step), len(groups) - 1)
+                sampled.append(groups[idx])
+            groups = sampled
 
-        # 每句生成一张图片
+        # 每组生成一张图片
         segment_images = []
-        for j, sentence in enumerate(items):
-            sent_keyword = _extract_keywords_simple(sentence)
+        for j, group_text in enumerate(groups):
+            sent_keyword = _extract_keywords_simple(group_text)
             if not sent_keyword:
                 sent_keyword = paragraph_keyword
             if not sent_keyword:
@@ -1757,7 +1765,7 @@ def auto_generate_images_for_project(project_dir: Path,
             filename = f"segment_{i+1:02d}_{j+1:02d}_{safe_kw}.jpg"
             save_path = images_dir / filename
 
-            print(f"   📥 [{i+1}/{len(segments)}-{j+1}/{len(items)}] {sent_keyword} → {filename}")
+            print(f"   📥 [{i+1}/{len(segments)}-{j+1}/{len(groups)}] {sent_keyword} → {filename}")
             success = _download_image(sent_keyword, image_provider, image_api_key, save_path, resolution=resolution)
             if success:
                 segment_images.append(filename)
@@ -1765,7 +1773,7 @@ def auto_generate_images_for_project(project_dir: Path,
             else:
                 print(f"      ❌ 下载失败，跳过")
             # 避免触发限流
-            if i < len(segments) - 1 or j < len(items) - 1:
+            if i < len(segments) - 1 or j < len(groups) - 1:
                 time.sleep(0.5)
 
         if segment_images:
