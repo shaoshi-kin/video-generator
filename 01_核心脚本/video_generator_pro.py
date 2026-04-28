@@ -1255,23 +1255,33 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
 
     # 1. 搜索资料
     try:
-        from duckduckgo_search import DDGS
+        try:
+            from duckduckgo_search import DDGS
+        except ImportError:
+            from ddgs import DDGS
         results = []
-        backends = ['api', 'html', 'lite']
+        backends = ['html', 'lite', 'api']
         for be in backends:
-            try:
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(title, backend=be))[:5]
-                if results:
-                    print(f"   ✅ 通过 {be} 找到 {len(results)} 条资料")
-                    break
-            except Exception:
-                continue
+            last_err = None
+            for retry in range(2):
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.text(title, backend=be))[:5]
+                    if results:
+                        print(f"   ✅ 通过 {be} 找到 {len(results)} 条资料")
+                        break
+                except Exception as e:
+                    last_err = str(e)[:80]
+                    time.sleep(0.5)
+            if results:
+                break
+            else:
+                print(f"   ⚠️  {be} 模式失败: {last_err or '无结果'}")
         if not results:
-            print("   ❌ 未找到相关资料")
+            print("   ❌ 所有搜索模式均失败，请检查网络连接")
             return False
     except ImportError:
-        print("   ❌ 未安装 duckduckgo-search，请运行: pip install duckduckgo-search")
+        print("   ❌ 未安装搜索依赖，请运行: pip install duckduckgo-search")
         return False
     except Exception as e:
         print(f"   ❌ 搜索失败: {e}")
