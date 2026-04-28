@@ -1391,6 +1391,71 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
     return article_path
 
 
+def _extract_keywords_simple(text: str) -> str:
+    """零依赖关键词提取：去掉口语词和停用词，提炼核心内容"""
+    # 优先提取引号、书名号内的内容（通常是核心概念）
+    quotes = re.findall(r'[《"「『]([^》"」』]+)[》」』"]', text)
+    if quotes:
+        best = max(quotes, key=len)
+        clean = re.sub(r'[^一-鿿A-Za-z0-9\s]', '', best).strip()
+        if len(clean) >= 2:
+            return clean[:20]
+
+    # 常见开头口语词
+    prefixes = ['你知道吗', '说实话', '其实', '事实上', '简单来说',
+                '值得注意的是', '有趣的是', '总的来说', '首先', '其次', '最后',
+                '令人惊讶的是', '更重要的是', '除此之外', '另一方面']
+
+    result = text
+    for prefix in prefixes:
+        if result.startswith(prefix):
+            result = result[len(prefix):]
+            break
+
+    # 去掉标点，只保留中文、英文、数字、空格
+    result = re.sub(r'[^一-鿿A-Za-z0-9\s]', '', result)
+
+    # 去掉常见停用词（整词匹配）
+    stop_phrases = ['一个', '一下', '一些', '一直', '非常', '可以', '进行',
+                    '表示', '认为', '通过', '根据', '关于', '对于', '我们',
+                    '知道', '看到', '听到', '想到', '觉得', '感觉', '发现',
+                    '开始', '结束', '完成', '准备', '继续', '需要', '想要',
+                    '应该', '必须', '可能', '也许', '大概', '差不多', '一起',
+                    '还是', '只是', '已经', '但是', '因为', '所以', '如果',
+                    '虽然', '不过', '并且', '或者', '以及', '还有', '就是',
+                    '这样', '那样', '这里', '那里', '什么', '怎么', '为什么',
+                    '多少', '多久', '哪里', '谁', '哪儿', '如何', '怎样',
+                    '莫过于', '一帆风顺', '普通用户', '近年来', '最近一段时间',
+                    '不得不说', '毫无疑问', '众所周知', '简单来说']
+    for phrase in stop_phrases:
+        result = result.replace(phrase, ' ')
+
+    # 去掉单字停用词
+    # 先无条件去掉最常见的"的"、"了"，然后对其他停用字做保守处理
+    result = result.replace('的', ' ').replace('了', ' ')
+    stop_chars = set('是在和与或就都而及对能会要去来到上下中被把给让从为以等着过将还只最更太真呢吧吗哦嗯哈呀哪')
+    chars = list(result)
+    filtered = []
+    for i, c in enumerate(chars):
+        if c in stop_chars:
+            # 检查前后是否都是中文字（避免拆开复合词中间的字）
+            prev_is_cn = i > 0 and '一' <= chars[i-1] <= '鿿'
+            next_is_cn = i < len(chars)-1 and '一' <= chars[i+1] <= '鿿'
+            if prev_is_cn and next_is_cn:
+                # 在复合词中间，保留
+                filtered.append(c)
+            else:
+                filtered.append(' ')
+        else:
+            filtered.append(c)
+    result = ''.join(filtered)
+
+    # 清理空格
+    result = re.sub(r'\s+', ' ', result).strip()
+
+    return result[:20] if result else text[:10]
+
+
 def _extract_image_keywords(segments: list, article_text: str,
                             api_key: str = None, base_url: str = None,
                             model: str = None, provider: str = 'kimi') -> list:
@@ -1627,8 +1692,8 @@ def auto_generate_images_for_project(project_dir: Path,
         if i < len(keywords) and keywords[i]:
             keyword = keywords[i]
         else:
-            # 无 LLM 关键词时，用段落内容前30字作为 fallback
-            keyword = re.sub(r'\s+', ' ', content[:30]).strip()
+            # 无 LLM 关键词时，用规则提取核心关键词
+            keyword = _extract_keywords_simple(content)
             if not keyword:
                 keyword = f"segment_{i}"
         # 文件名与搜索词分开：文件名只取前15字，去掉中文标点，更简洁
