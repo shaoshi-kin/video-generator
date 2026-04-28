@@ -1253,45 +1253,62 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
 
     print(f"\n🔍 正在搜索资料: {title}")
 
-    # 1. 搜索资料
+    # 1. 搜索资料（多 backend 聚合去重）
     try:
         try:
             from duckduckgo_search import DDGS
         except ImportError:
             from ddgs import DDGS
-        results = []
-        backends = ['html', 'lite', 'api']
+        all_results = []
+        seen = set()
+        backends = ['html', 'lite']
         for be in backends:
+            be_results = []
             last_err = None
             for retry in range(2):
                 try:
                     with DDGS() as ddgs:
-                        results = list(ddgs.text(title, backend=be))[:5]
-                    if results:
-                        print(f"   ✅ 通过 {be} 找到 {len(results)} 条资料")
+                        be_results = list(ddgs.text(title, backend=be, max_results=5))
+                    break
+                except TypeError:
+                    # 旧版本不支持 max_results
+                    try:
+                        with DDGS() as ddgs:
+                            be_results = list(ddgs.text(title, backend=be))[:5]
                         break
+                    except Exception as e:
+                        last_err = str(e)[:80]
                 except Exception as e:
                     last_err = str(e)[:80]
                     time.sleep(0.5)
-            if results:
-                break
+            # 去重合并
+            for r in be_results:
+                key = (r.get('title', '') + r.get('body', '')).strip()[:200]
+                if key and key not in seen:
+                    seen.add(key)
+                    all_results.append(r)
+            if be_results:
+                print(f"   ✅ {be}: {len(be_results)} 条（累计 {len(all_results)} 条）")
             else:
-                print(f"   ⚠️  {be} 模式失败: {last_err or '无结果'}")
+                print(f"   ⚠️  {be} 失败: {last_err or '无结果'}")
+        results = all_results[:7]  # 最多 7 条
         if not results:
-            print("   ❌ 所有搜索模式均失败，请检查网络连接")
-            return False
+            print("   ⚠️  网络搜索不可用，将直接根据标题生成文章")
     except ImportError:
-        print("   ❌ 未安装搜索依赖，请运行: pip install duckduckgo-search")
-        return False
+        print("   ⚠️  未安装搜索依赖，将直接根据标题生成文章")
+        results = []
     except Exception as e:
-        print(f"   ❌ 搜索失败: {e}")
-        return False
+        print(f"   ⚠️  搜索异常: {e}，将直接根据标题生成文章")
+        results = []
 
     # 整理搜索摘要
-    search_summary = []
-    for i, r in enumerate(results, 1):
-        search_summary.append(f"[{i}] {r.get('title', '')}\n{r.get('body', '')}")
-    search_text = '\n\n'.join(search_summary)
+    if results:
+        search_summary = []
+        for i, r in enumerate(results, 1):
+            search_summary.append(f"[{i}] {r.get('title', '')}\n{r.get('body', '')}")
+        search_text = '\n\n'.join(search_summary)
+    else:
+        search_text = "（无搜索资料，请根据标题自行发挥）"
 
     # 2. 获取 API 配置
     api_key = api_key or os.environ.get('KIMI_API_KEY') or os.environ.get('OPENAI_API_KEY')
@@ -1304,7 +1321,8 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
         print("   或: export OPENAI_API_KEY='sk-...'")
         return False
 
-    prompt = f"""你是一位资深短视频文案专家。请根据以下搜索资料，撰写一篇适合 AI 配音的口播文章。
+    if results:
+        prompt = f"""你是一位资深短视频文案专家。请根据以下搜索资料，撰写一篇适合 AI 配音的口播文章。
 
 【标题】{title}
 
@@ -1319,6 +1337,22 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
 5. 不要出现 "大家好"、"我是 XX" 等固定开场白，直接进入内容
 6. 适当使用 "你知道吗"、"说实话"、"其实" 等口语表达增加亲和力
 7. 结尾不要添加 "关注我"、"点赞" 等引导语
+
+请直接输出文章正文，不需要输出标题和任何其他说明。"""
+    else:
+        prompt = f"""你是一位资深短视频文案专家。请根据以下标题，撰写一篇适合 AI 配音的口播文章。
+
+【标题】{title}
+
+要求：
+1. 用中文撰写，口语化、有节奏感，适合朗读
+2. 总字数控制在 300-600 字（约 1-2 分钟朗读时长）
+3. 结构：开头吸引注意力 → 正文展开 → 结尾总结/引发思考
+4. 每段不要太长，用空行分段
+5. 不要出现 "大家好"、"我是 XX" 等固定开场白，直接进入内容
+6. 适当使用 "你知道吗"、"说实话"、"其实" 等口语表达增加亲和力
+7. 结尾不要添加 "关注我"、"点赞" 等引导语
+8. 基于你对该话题的知识，写出有信息量的内容，不要编造具体数据
 
 请直接输出文章正文，不需要输出标题和任何其他说明。"""
 
