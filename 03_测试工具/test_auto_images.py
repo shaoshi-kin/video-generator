@@ -341,6 +341,43 @@ class TestAutoGenerateImagesForProject:
         result = vgp.auto_generate_images_for_project(project_dir)
         assert result == 0
 
+    def test_empty_keywords_uses_content_fallback(self, tmp_path):
+        """When LLM returns no keywords, segment content should be used as fallback."""
+        project_dir = tmp_path / "test_project"
+        article_dir = project_dir / "01_article"
+        article_dir.mkdir(parents=True)
+
+        article_content = (
+            "# 测试\n\n"
+            "@全局:女声\n\n"
+            "@女声:人工智能的发展历史。\n\n"
+            "@男声:机器学习的应用场景。\n"
+        )
+        article_path = article_dir / "文章.md"
+        article_path.write_text(article_content, encoding="utf-8")
+
+        # Mock _extract_image_keywords to return empty list (simulating no API key)
+        def mock_extract(segments, article_text, **kwargs):
+            return []
+
+        saved_keywords = []
+        def mock_download(keyword, provider, api_key, save_path):
+            saved_keywords.append(keyword)
+            save_path.write_bytes(b"dummy")
+            return True
+
+        with patch.object(vgp, "_extract_image_keywords", side_effect=mock_extract), \
+             patch.object(vgp, "_download_image", side_effect=mock_download):
+            count = vgp.auto_generate_images_for_project(project_dir)
+
+        assert count == 2
+        # Keywords should be derived from segment content, not "segment_0"
+        assert "segment_0" not in saved_keywords
+        assert "segment_1" not in saved_keywords
+        # Should contain content from the segments
+        assert any("人工智能" in kw for kw in saved_keywords)
+        assert any("机器学习" in kw for kw in saved_keywords)
+
 
 # =============================================================================
 # Tests for auto_generate_article_from_title return type

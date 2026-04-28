@@ -1611,6 +1611,8 @@ def auto_generate_images_for_project(project_dir: Path,
         api_key=llm_api_key, base_url=llm_base_url,
         model=llm_model, provider=llm_provider
     )
+    if not keywords:
+        print("   ⚠️  未配置 LLM API，将使用段落内容作为图片搜索词")
 
     # 创建图片目录
     images_dir = project_dir / '03_images'
@@ -1623,7 +1625,13 @@ def auto_generate_images_for_project(project_dir: Path,
             print(f"   ⚠️  段落 {i} 格式异常，跳过")
             continue
         voice, content, _ = segment
-        keyword = keywords[i] if i < len(keywords) else f"segment_{i}"
+        if i < len(keywords) and keywords[i]:
+            keyword = keywords[i]
+        else:
+            # 无 LLM 关键词时，用段落内容前30字作为 fallback
+            keyword = re.sub(r'\s+', ' ', content[:30]).strip()
+            if not keyword:
+                keyword = f"segment_{i}"
         # 安全化文件名：只移除文件系统危险字符
         safe_kw = re.sub(r'[\\/:*?"<>|]+', '_', keyword).strip('_')[:30]
         if not safe_kw:
@@ -1793,7 +1801,7 @@ def auto_generate_audio(project_dir: Path, voice: str = 'Xiaoxiao', rate: str = 
             f.unlink()
         print(f"🔄 强制重新生成音频，已清理旧音频")
 
-    if not article_files:
+    if not latest_article:
         return False, []
 
     # 检测模式：如果有视频目录且包含视频文件，则为视频模式
