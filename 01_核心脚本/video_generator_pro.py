@@ -1638,12 +1638,37 @@ def _generate_global_visual_prompt(article_text: str,
     return result
 
 
+def _split_sentences(content: str) -> list:
+    """按 。！？； 拆分成句子列表（逗号不拆）"""
+    sentences = re.split(r'([。！？；])', content.strip())
+    items = []
+    buf = ''
+    for s in sentences:
+        if s in '。！？；':
+            buf += s
+            if buf.strip():
+                items.append(buf.strip())
+            buf = ''
+        else:
+            buf += s
+    if buf.strip():
+        items.append(buf.strip())
+    if not items:
+        items = [content.strip()]
+    return items
+
+
 def _generate_segment_storyboard(segment_text: str, global_prompt: dict,
                                   api_key: str = None, base_url: str = None,
-                                  model: str = None, provider: str = 'deepseek') -> list:
+                                  model: str = None, provider: str = 'deepseek',
+                                  numbered_sentences: list = None) -> list:
     """为单个段落生成分镜脚本
 
-    返回: list of dict，每个包含 shot_type, composition, lighting, emotion, prompt_en
+    Args:
+        numbered_sentences: 带编号的句子列表，如 ['[1] 第一句。', '[2] 第二句。']
+                            传入时 AI 会按句子范围自动划分分镜
+
+    返回: list of dict，每个包含 shot_type, composition, lighting, emotion, prompt_en, sentence_range
     """
     import requests
 
@@ -1662,7 +1687,34 @@ def _generate_segment_storyboard(segment_text: str, global_prompt: dict,
 
     global_json = json.dumps(global_prompt, ensure_ascii=False)
 
-    prompt = f"""你是一位电影分镜师。基于以下视觉设定和段落内容，生成 1-3 个分镜描述。
+    if numbered_sentences:
+        # 方案 B：AI 自动划分分镜（带句子编号）
+        num_lines = len(numbered_sentences)
+        sentences_text = "\n".join(numbered_sentences)
+        prompt = f"""你是一位电影分镜师。以下是一段口播内容，共 {num_lines} 句话：
+
+{sentences_text}
+
+基于以下视觉设定，请为这段话划分最多 3 个分镜。每个分镜覆盖连续的句子范围。
+请根据内容密度和场景变化决定分几个分镜：
+- 内容简单、场景单一：1 个分镜
+- 内容有转折、涉及多个人物或场景：2-3 个分镜
+
+每个分镜必须包含：
+- sentence_range: [起始句号, 结束句号]（如 [1, 4]）
+- shot_type: 景别（远景/中景/特写）
+- prompt_en: 英文生图 prompt，要具体、有画面感
+
+所有 prompt_en 都要以视觉设定的风格为前提。
+不要输出 markdown 代码块。
+
+请严格输出 JSON 数组格式：
+[{{"sentence_range":[1,4],"shot_type":"...","composition":"...","lighting":"...","emotion":"...","prompt_en":"..."}}]
+
+视觉设定：{global_json}"""
+    else:
+        # 兼容旧模式（不带编号）
+        prompt = f"""你是一位电影分镜师。基于以下视觉设定和段落内容，生成 1-3 个分镜描述。
 
 规则：
 - 内容简单或短的段落：1 张图
@@ -1930,15 +1982,48 @@ def auto_generate_images_for_project(project_dir: Path,
                     continue
                 voice, content, _ = segment
 
-                print(f"\n   📝 段落 {i+1}/{len(segments)} 分镜生成中...")
+                # 拆句并过滤短段落
+                sentences = _split_sentences(content)
+                if len(sentences) < 3:
+                    # 短段落不分镜，fallback 到关键词搜索生成 1 张图
+                    print(f"\n   📝 段落 {i+1}/{len(segments)}（{len(sentences)} 句，短段落）→ 关键词模式")
+                    paragraph_keyword = _extract_keywords_simple(content)
+                    if not paragraph_keyword:
+                        paragraph_keyword = content[:20]
+                    safe_kw = re.sub(r'[\\/:*?"<>|，。！？、；：""''（）【】]+', '', paragraph_keyword).strip()[:15]
+                    if not safe_kw:
+                        safe_kw = f"seg_{i}"
+                    filename = f"segment_{i+1:02d}_01_{safe_kw}.jpg"
+                    save_path = images_dir / filename
+                    print(f"   📥 [{i+1}/{len(segments)}] {paragraph_keyword} → {filename}")
+                    success = _download_image(paragraph_keyword, image_provider, image_api_key, save_path, resolution=resolution)
+                    if success:
+                        downloaded_map[i] = [filename]
+                        print(f"      ✅ 已下载")
+                    else:
+                        print(f"      ❌ 下载失败，跳过")
+                    if i < len(segments) - 1:
+                        time.sleep(0.5)
+                    continue
+
+                # 长段落：生成编号句子，让 AI 自动划分分镜
+                numbered = [f"[{k+1}] {s}" for k, s in enumerate(sentences)]
+                print(f"\n   📝 段落 {i+1}/{len(segments)}（{len(sentences)} 句）分镜生成中...")
                 storyboard = _generate_segment_storyboard(
                     content, global_prompt,
                     api_key=llm_api_key, base_url=llm_base_url,
-                    model=llm_model, provider=llm_provider
+                    model=llm_model, provider=llm_provider,
+                    numbered_sentences=numbered
                 )
                 if not storyboard:
                     print(f"   ⚠️  段落 {i+1} 分镜生成失败，跳过")
                     continue
+
+                print(f"   🎬 分镜划分: {len(storyboard)} 个")
+                for shot in storyboard:
+                    sr = shot.get('sentence_range', [])
+                    if sr and len(sr) == 2:
+                        print(f"      📍 句子 {sr[0]}-{sr[1]}: {shot.get('shot_type', '图')}")
 
                 segment_images = []
                 for j, shot in enumerate(storyboard):
