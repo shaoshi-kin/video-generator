@@ -276,7 +276,7 @@ class TestAutoGenerateImagesForProject:
             return ["artificial intelligence", "machine learning", "deep learning"]
 
         # Mock _download_image to create a dummy image file
-        def mock_download(keyword, provider, api_key, save_path):
+        def mock_download(keyword, provider, api_key, save_path, resolution=None):
             save_path.write_bytes(b"dummy_image_data")
             return True
 
@@ -362,7 +362,7 @@ class TestAutoGenerateImagesForProject:
             return []
 
         saved_keywords = []
-        def mock_download(keyword, provider, api_key, save_path):
+        def mock_download(keyword, provider, api_key, save_path, resolution=None):
             saved_keywords.append(keyword)
             save_path.write_bytes(b"dummy")
             return True
@@ -480,7 +480,7 @@ class TestAutoGenerateArticleFromTitle:
             return ["kw1", "kw2", "kw3"]
 
         # Only segment 0 and 2 succeed
-        def mock_download(keyword, provider, api_key, save_path):
+        def mock_download(keyword, provider, api_key, save_path, resolution=None):
             if keyword == "kw2":
                 return False
             save_path.write_bytes(b"dummy")
@@ -516,7 +516,7 @@ class TestAutoGenerateArticleFromTitle:
         def mock_extract(segments, article_text, **kwargs):
             return ["new1", "new2"]
 
-        def mock_download(keyword, provider, api_key, save_path):
+        def mock_download(keyword, provider, api_key, save_path, resolution=None):
             save_path.write_bytes(b"dummy")
             return True
 
@@ -554,7 +554,7 @@ class TestKeywordFilenameSanitization:
             return ["artificial<intelligence>", "hello/world:test"]
 
         saved_paths = []
-        def mock_download(keyword, provider, api_key, save_path):
+        def mock_download(keyword, provider, api_key, save_path, resolution=None):
             saved_paths.append(save_path.name)
             save_path.write_bytes(b"dummy")
             return True
@@ -584,7 +584,7 @@ class TestKeywordFilenameSanitization:
             return ["人工智能"]
 
         saved_paths = []
-        def mock_download(keyword, provider, api_key, save_path):
+        def mock_download(keyword, provider, api_key, save_path, resolution=None):
             saved_paths.append(save_path.name)
             save_path.write_bytes(b"dummy")
             return True

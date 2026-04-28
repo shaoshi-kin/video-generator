@@ -481,6 +481,32 @@ def build_sentence_subtitle_filter(
     if not items:
         items = [subtitle.strip()]
 
+    # 长句进一步按逗号拆分，避免单句过长超出屏幕
+    threshold = max_chars_per_line * 2
+    refined = []
+    for item in items:
+        if len(item) > threshold:
+            # 按逗号拆分，保留逗号在前一段
+            parts = re.split(r'([，])', item)
+            part_buf = ''
+            for p in parts:
+                if p == '，':
+                    part_buf += p
+                    if len(part_buf) >= max_chars_per_line:
+                        refined.append(part_buf.strip())
+                        part_buf = ''
+                else:
+                    part_buf += p
+            if part_buf.strip():
+                refined.append(part_buf.strip())
+        else:
+            refined.append(item)
+    items = refined if refined else items
+
+    # 对每句做换行处理，避免超出屏幕
+    if wrap:
+        items = [wrap_subtitle_text(s, max_chars=max_chars_per_line) for s in items]
+
     # 单句直接走整段显示
     if len(items) == 1:
         return build_subtitle_filter(
@@ -499,10 +525,14 @@ def build_sentence_subtitle_filter(
     y_pos = height - subtitle_style['y_offset'] if subtitle_style['position'] == 'bottom' else height // 2
 
     for idx, sentence in enumerate(items):
-        # 处理换行符和反斜杠，避免 ffmpeg filter 解析出错
-        sentence = sentence.replace('\n', ' ').replace('\\n', ' ')
-        sentence = sentence.replace("\\", "\\\\").replace("'", "'\\''")
-        sent_chars = len(sentence)
+        # 保留 \n 换行符供 drawtext 使用，只转义单引号和反斜杠（但保留 \n）
+        sentence = sentence.replace("'", "'\\''")
+        # 将独立的反斜杠（非 \n）转义，保护 filter 语法
+        # 先临时替换 \n 为占位符，转义其他反斜杠，再恢复
+        sentence = sentence.replace('\\n', '\x00NEWLINE\x00')
+        sentence = sentence.replace('\\', '\\\\')
+        sentence = sentence.replace('\x00NEWLINE\x00', '\\n')
+        sent_chars = len(sentence.replace('\\n', ''))
         sent_duration = max(sent_chars * char_time, 1.0)  # 最少1秒
 
         start_t = current_time
@@ -1549,7 +1579,8 @@ def _extract_image_keywords(segments: list, article_text: str,
     return keywords[:len(segments)]
 
 
-def _download_image(keyword: str, provider: str, api_key: str, save_path: Path) -> bool:
+def _download_image(keyword: str, provider: str, api_key: str, save_path: Path,
+                    resolution: str = '1920x1080') -> bool:
     """下载图片到指定路径
 
     支持 provider:
@@ -1563,12 +1594,20 @@ def _download_image(keyword: str, provider: str, api_key: str, save_path: Path) 
     provider = (provider or 'pollinations').lower()
 
     try:
+        # 解析分辨率，判断横竖屏
+        try:
+            w, h = map(int, resolution.split('x'))
+            is_portrait = h > w
+        except Exception:
+            is_portrait = False
+
         if provider == 'pollinations':
             # Pollinations.ai: 直接生成式图片，URL 编码 prompt
             import hashlib
             safe_kw = urllib.parse.quote(keyword)
             stable_seed = int(hashlib.md5(keyword.encode('utf-8')).hexdigest(), 16) % 10000
-            url = f"https://image.pollinations.ai/prompt/{safe_kw}?width=1920&height=1080&nologo=true&seed={stable_seed}&enhance=true"
+            img_w, img_h = (1080, 1920) if is_portrait else (1920, 1080)
+            url = f"https://image.pollinations.ai/prompt/{safe_kw}?width={img_w}&height={img_h}&nologo=true&seed={stable_seed}&enhance=true"
             response = requests.get(url, timeout=120)
             response.raise_for_status()
             content_type = response.headers.get('Content-Type', '')
@@ -1582,7 +1621,8 @@ def _download_image(keyword: str, provider: str, api_key: str, save_path: Path) 
             if not api_key:
                 print("   ⚠️  Unsplash 需要 API Key")
                 return False
-            search_url = f"https://api.unsplash.com/search/photos?query={urllib.parse.quote(keyword)}&per_page=1&orientation=landscape"
+            orientation = 'portrait' if is_portrait else 'landscape'
+            search_url = f"https://api.unsplash.com/search/photos?query={urllib.parse.quote(keyword)}&per_page=1&orientation={orientation}"
             headers = {'Authorization': f'Client-ID {api_key}'}
             search_resp = requests.get(search_url, headers=headers, timeout=30)
             search_resp.raise_for_status()
@@ -1604,7 +1644,8 @@ def _download_image(keyword: str, provider: str, api_key: str, save_path: Path) 
             if not api_key:
                 print("   ⚠️  Pexels 需要 API Key")
                 return False
-            search_url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(keyword)}&per_page=1&orientation=landscape"
+            orientation = 'portrait' if is_portrait else 'landscape'
+            search_url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(keyword)}&per_page=1&orientation={orientation}"
             headers = {'Authorization': api_key}
             search_resp = requests.get(search_url, headers=headers, timeout=30)
             search_resp.raise_for_status()
@@ -1641,7 +1682,8 @@ def auto_generate_images_for_project(project_dir: Path,
                                       llm_provider: str = 'kimi',
                                       llm_api_key: str = None,
                                       llm_base_url: str = None,
-                                      llm_model: str = None) -> int:
+                                      llm_model: str = None,
+                                      resolution: str = '1920x1080') -> int:
     """为项目文章自动配图
 
     返回: 成功插入的图片数量
@@ -1704,7 +1746,7 @@ def auto_generate_images_for_project(project_dir: Path,
         save_path = images_dir / filename
 
         print(f"   📥 [{i+1}/{len(segments)}] {keyword} → {filename}")
-        success = _download_image(keyword, image_provider, image_api_key, save_path)
+        success = _download_image(keyword, image_provider, image_api_key, save_path, resolution=resolution)
         if success:
             downloaded_map[i] = filename
             print(f"      ✅ 已下载")
@@ -4438,7 +4480,8 @@ AI配音音色 (--voice):
                 llm_provider=getattr(args, 'llm_provider', 'kimi'),
                 llm_api_key=getattr(args, 'llm_api_key', None),
                 llm_base_url=getattr(args, 'llm_base_url', None),
-                llm_model=getattr(args, 'llm_model', None)
+                llm_model=getattr(args, 'llm_model', None),
+                resolution=getattr(args, 'resolution', '1920x1080')
             )
             auto_images_done = True
             if img_count == 0:
@@ -4676,7 +4719,8 @@ AI配音音色 (--voice):
                 llm_provider=getattr(args, 'llm_provider', 'kimi'),
                 llm_api_key=getattr(args, 'llm_api_key', None),
                 llm_base_url=getattr(args, 'llm_base_url', None),
-                llm_model=getattr(args, 'llm_model', None)
+                llm_model=getattr(args, 'llm_model', None),
+                resolution=getattr(args, 'resolution', '1920x1080')
             )
             if img_count == 0:
                 print("⚠️  自动配图未成功，继续生成视频（可能使用默认图片）")
