@@ -464,12 +464,11 @@ def build_sentence_subtitle_filter(
 
     # 按标点拆分（句号、感叹号、问号、分号、逗号）
     sentences = re.split(r'([。！？；，])', subtitle.strip())
-    # 重组：把标点和前面的内容合并
+    # 重组：按标点分段，但标点本身不显示在字幕中
     items = []
     buf = ''
     for s in sentences:
         if s in '。！？；，':
-            buf += s
             if buf.strip():
                 items.append(buf.strip())
             buf = ''
