@@ -1269,7 +1269,7 @@ def _needs_realtime_search(title: str) -> bool:
 
 def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str = None,
                                       base_url: str = None, model: str = None,
-                                      provider: str = 'kimi', search_web: bool = False) -> bool:
+                                      provider: str = 'kimi', search_web: bool = False) -> Optional[Path]:
     """根据标题直接调用 LLM 生成口播文章
 
     支持 provider:
@@ -1280,6 +1280,8 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
       - KIMI_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY
       - LLM_BASE_URL
       - LLM_MODEL
+
+    返回: 生成的文章路径，失败返回 None
     """
     import requests
 
@@ -1300,7 +1302,7 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
 
     if provider not in defaults:
         print(f"⚠️  不支持的 provider: {provider}，可用: {', '.join(defaults.keys())}")
-        return False
+        return None
 
     cfg = defaults[provider]
 
@@ -1316,7 +1318,7 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
         print(f"   请设置环境变量: export {cfg['env_key']}='sk-...'")
         print("   或: export OPENAI_API_KEY='sk-...'")
         print(f"   或命令行指定: --llm-api-key 'sk-...'")
-        return False
+        return None
 
     print(f"\n✍️  正在使用 {provider.upper()} ({model}) 生成文章...")
     if search_web:
@@ -1366,10 +1368,10 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
         err_body = e.response.text[:200] if e.response else '未知'
         print(f"❌ API 错误: {e.response.status_code if e.response else '?'}")
         print(f"   详情: {err_body}")
-        return False
+        return None
     except Exception as e:
         print(f"❌ API 调用失败: {e}")
-        return False
+        return None
 
     # 保存文章（时间戳命名，避免覆盖）
     article_dir = output_dir / '01_article'
@@ -1386,7 +1388,337 @@ def auto_generate_article_from_title(title: str, output_dir: Path, api_key: str 
     preview_lines = [l.strip() for l in article_text.split('\n') if l.strip()][:3]
     for line in preview_lines:
         print(f"   {line[:60]}...")
-    return True
+    return article_path
+
+
+def _extract_image_keywords(segments: list, article_text: str,
+                            api_key: str = None, base_url: str = None,
+                            model: str = None, provider: str = 'kimi') -> list:
+    """为每个段落提取英文图片搜索关键词
+
+    返回: List[str]，长度与 segments 相同
+    """
+    import requests
+
+    provider = (provider or 'kimi').lower()
+    defaults = {
+        'kimi': {'base_url': 'https://api.moonshot.cn/v1', 'model': 'moonshot-v1-8k', 'env_key': 'KIMI_API_KEY'},
+        'deepseek': {'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat', 'env_key': 'DEEPSEEK_API_KEY'}
+    }
+    cfg = defaults.get(provider, defaults['kimi'])
+
+    api_key = (api_key or os.environ.get(cfg['env_key']) or os.environ.get('OPENAI_API_KEY'))
+    base_url = base_url or os.environ.get('LLM_BASE_URL', cfg['base_url'])
+    model = model or os.environ.get('LLM_MODEL', cfg['model'])
+
+    if not api_key:
+        print("   ⚠️  未配置 LLM API，跳过关键词提取")
+        return []
+
+    # 构建段落摘要（前80字）
+    segment_summaries = []
+    for i, (voice, content, _) in enumerate(segments):
+        summary = content[:80].replace('\n', ' ')
+        segment_summaries.append(f"段落{i+1}: {summary}")
+
+    segments_text = "\n".join(segment_summaries)
+    prompt = f"""你是一位视觉内容策划专家。请为以下口播文章的每个段落，提取一个最适合用于图片搜索的英文关键词。
+
+要求：
+1. 关键词必须具体、视觉化，能直接用于图库搜索
+2. 每个段落只输出1个关键词，不要解释
+3. 关键词尽量用英文，如果内容极具中国特色可用拼音
+4. 输出格式严格如下（每行一个）：
+   段落1: keyword1
+   段落2: keyword2
+
+文章内容段落：
+{segments_text}
+
+请严格按格式输出。"""
+
+    try:
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        payload = {
+            'model': model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.3,
+            'max_tokens': 1000
+        }
+        response = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers=headers, json=payload, timeout=60
+        )
+        response.raise_for_status()
+        data = response.json()
+        result_text = data['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"   ⚠️  关键词提取失败: {e}")
+        return []
+
+    # 解析返回的关键词
+    keywords = []
+    for line in result_text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        # 匹配 "段落N: keyword" 或 "N. keyword" 或 "- keyword"
+        match = re.match(r'(?:段落\d+[:：]|\d+[.．]|[-*])\s*(.+)', line)
+        if match:
+            kw = match.group(1).strip()
+            # 清理可能的引号
+            kw = kw.strip('"\'').strip()
+            if kw:
+                keywords.append(kw)
+
+    # 如果解析出的关键词数量不足，用占位符补齐
+    while len(keywords) < len(segments):
+        idx = len(keywords)
+        # 提取前20个非空白字符作为 fallback
+        content = segments[idx][1].strip()
+        fallback = re.sub(r'\s+', '_', content[:20]).strip('_')
+        keywords.append(fallback or f"segment_{idx}")
+
+    return keywords[:len(segments)]
+
+
+def _download_image(keyword: str, provider: str, api_key: str, save_path: Path) -> bool:
+    """下载图片到指定路径
+
+    支持 provider:
+      - pollinations: Pollinations.ai（免费，无需 key）
+      - unsplash: Unsplash API（需 Access Key）
+      - pexels: Pexels API（需 API Key）
+    """
+    import requests
+    import urllib.parse
+
+    provider = (provider or 'pollinations').lower()
+
+    try:
+        if provider == 'pollinations':
+            # Pollinations.ai: 直接生成式图片，URL 编码 prompt
+            import hashlib
+            safe_kw = urllib.parse.quote(keyword)
+            stable_seed = int(hashlib.md5(keyword.encode('utf-8')).hexdigest(), 16) % 10000
+            url = f"https://image.pollinations.ai/prompt/{safe_kw}?width=1920&height=1080&nologo=true&seed={stable_seed}&enhance=true"
+            response = requests.get(url, timeout=120)
+            response.raise_for_status()
+            content_type = response.headers.get('Content-Type', '')
+            if not content_type.startswith('image/'):
+                print(f"   ⚠️  Pollinations 返回非图片内容: {content_type[:50]}")
+                return False
+            save_path.write_bytes(response.content)
+            return True
+
+        elif provider == 'unsplash':
+            if not api_key:
+                print("   ⚠️  Unsplash 需要 API Key")
+                return False
+            search_url = f"https://api.unsplash.com/search/photos?query={urllib.parse.quote(keyword)}&per_page=1&orientation=landscape"
+            headers = {'Authorization': f'Client-ID {api_key}'}
+            search_resp = requests.get(search_url, headers=headers, timeout=30)
+            search_resp.raise_for_status()
+            data = search_resp.json()
+            if not data.get('results'):
+                print(f"   ⚠️  Unsplash 未找到图片: {keyword}")
+                return False
+            img_url = data['results'][0]['urls']['regular']
+            img_resp = requests.get(img_url, timeout=60)
+            img_resp.raise_for_status()
+            content_type = img_resp.headers.get('Content-Type', '')
+            if not content_type.startswith('image/'):
+                print(f"   ⚠️  Unsplash 返回非图片内容: {content_type[:50]}")
+                return False
+            save_path.write_bytes(img_resp.content)
+            return True
+
+        elif provider == 'pexels':
+            if not api_key:
+                print("   ⚠️  Pexels 需要 API Key")
+                return False
+            search_url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(keyword)}&per_page=1&orientation=landscape"
+            headers = {'Authorization': api_key}
+            search_resp = requests.get(search_url, headers=headers, timeout=30)
+            search_resp.raise_for_status()
+            data = search_resp.json()
+            if not data.get('photos'):
+                print(f"   ⚠️  Pexels 未找到图片: {keyword}")
+                return False
+            img_url = data['photos'][0]['src']['large']
+            img_resp = requests.get(img_url, timeout=60)
+            img_resp.raise_for_status()
+            content_type = img_resp.headers.get('Content-Type', '')
+            if not content_type.startswith('image/'):
+                print(f"   ⚠️  Pexels 返回非图片内容: {content_type[:50]}")
+                return False
+            save_path.write_bytes(img_resp.content)
+            return True
+
+        else:
+            print(f"   ⚠️  不支持的图片 provider: {provider}")
+            return False
+
+    except requests.exceptions.HTTPError as e:
+        err = e.response.text[:100] if e.response else str(e)
+        print(f"   ⚠️  下载图片 HTTP 错误: {err}")
+        return False
+    except Exception as e:
+        print(f"   ⚠️  下载图片失败: {e}")
+        return False
+
+
+def auto_generate_images_for_project(project_dir: Path,
+                                      image_provider: str = 'pollinations',
+                                      image_api_key: str = None,
+                                      llm_provider: str = 'kimi',
+                                      llm_api_key: str = None,
+                                      llm_base_url: str = None,
+                                      llm_model: str = None) -> int:
+    """为项目文章自动配图
+
+    返回: 成功插入的图片数量
+    """
+    article_dir = project_dir / '01_article'
+    article_path = _get_latest_article(article_dir)
+    if not article_path:
+        print("❌ 未找到文章文件")
+        return 0
+
+    try:
+        with open(article_path, 'r', encoding='utf-8') as f:
+            article_text = f.read()
+    except Exception as e:
+        print(f"❌ 读取文章失败: {e}")
+        return 0
+
+    # 解析段落
+    segments, default_image = parse_article_segments(article_text)
+    if not segments:
+        print("❌ 文章未解析出有效段落")
+        return 0
+
+    print(f"\n🎨 自动配图: 发现 {len(segments)} 个段落")
+    print(f"   图片源: {image_provider}")
+
+    # 提取关键词
+    print("   🔍 正在提取图片关键词...")
+    keywords = _extract_image_keywords(
+        segments, article_text,
+        api_key=llm_api_key, base_url=llm_base_url,
+        model=llm_model, provider=llm_provider
+    )
+
+    # 创建图片目录
+    images_dir = project_dir / '03_images'
+    images_dir.mkdir(exist_ok=True)
+
+    # 下载图片
+    downloaded_map = {}  # segment_idx -> filename
+    for i, segment in enumerate(segments):
+        if len(segment) != 3:
+            print(f"   ⚠️  段落 {i} 格式异常，跳过")
+            continue
+        voice, content, _ = segment
+        keyword = keywords[i] if i < len(keywords) else f"segment_{i}"
+        # 安全化文件名：只移除文件系统危险字符
+        safe_kw = re.sub(r'[\\/:*?"<>|]+', '_', keyword).strip('_')[:30]
+        if not safe_kw:
+            safe_kw = f"segment_{i:02d}"
+        filename = f"segment_{i+1:02d}_{safe_kw}.jpg"
+        save_path = images_dir / filename
+
+        print(f"   📥 [{i+1}/{len(segments)}] {keyword} → {filename}")
+        success = _download_image(keyword, image_provider, image_api_key, save_path)
+        if success:
+            downloaded_map[i] = filename
+            print(f"      ✅ 已下载")
+        else:
+            print(f"      ❌ 下载失败，跳过")
+        # 避免触发限流
+        if i < len(segments) - 1:
+            time.sleep(0.5)
+
+    if not downloaded_map:
+        print("⚠️  没有成功下载任何图片")
+        return 0
+
+    # 在原文章中插入 @图: 标记
+    print(f"\n📝 正在插入图片标记到文章...")
+    # 注意：@图: 必须插入在 @音色: 之前，与 parse_article_segments 的解析顺序一致
+
+    # 读取原文章并按行处理
+    lines = article_text.split('\n')
+    new_lines = []
+    segment_idx = 0
+    in_segment = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # 跳过全局设置、默认图片、标题等元数据行
+        if re.match(r'^#', stripped):
+            new_lines.append(line)
+            continue
+        if re.match(r'^@(?:全局|默认图)', stripped):
+            new_lines.append(line)
+            continue
+        if re.match(r'^@(图|图片|img)[:：]', stripped):
+            # 跳过已有的图片标记，后面会重新插入
+            continue
+
+        # 检测段落边界（音色标记或空行）
+        voice_match = re.match(r'^@(\w+)[:：]', stripped)
+        if voice_match:
+            voice_key = voice_match.group(1)
+            if voice_key in VOICE_MAP:
+                # 新段落开始，先插入图片标记
+                if segment_idx in downloaded_map:
+                    new_lines.append(f"@图:{downloaded_map[segment_idx]}")
+                segment_idx += 1
+                in_segment = True
+                new_lines.append(line)
+                continue
+
+        if not stripped:
+            # 空行表示段落结束
+            in_segment = False
+            new_lines.append(line)
+            continue
+
+        new_lines.append(line)
+
+    # 处理最后一段（如果没有以空行结尾）
+    # 这里 segment_idx 已经统计了所有音色标记，如果有遗漏在末尾补
+
+    new_article = '\n'.join(new_lines)
+
+    # 备份原文章
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_path = article_dir / f"文章_原稿_{timestamp}.md"
+    shutil.copy(str(article_path), str(backup_path))
+    print(f"   📋 原稿已备份: {backup_path.name}")
+
+    # 保存修改后的文章
+    with open(article_path, 'w', encoding='utf-8') as f:
+        f.write(new_article)
+    print(f"   ✅ 文章已更新: {article_path.name}")
+
+    # 验证：重新解析，确保标记插入正确
+    try:
+        verify_segments, _ = parse_article_segments(new_article)
+        img_markers = sum(1 for _, _, img in verify_segments if img)
+        print(f"   🔍 验证: {len(verify_segments)} 段, {img_markers} 张图片分配")
+    except Exception as e:
+        print(f"   ⚠️  文章解析验证失败: {e}")
+
+    print(f"\n{'='*60}")
+    print(f"🎉 自动配图完成！共插入 {len(downloaded_map)} 张图片")
+    print(f"{'='*60}")
+    return len(downloaded_map)
 
 
 def normalize_audio_loudness(input_path: Path, output_path: Path, target_lufs: float = -14.0) -> bool:
@@ -3895,6 +4227,12 @@ AI配音音色 (--voice):
                        help='AI 自动生成文章：输入标题，调用 LLM 直接生成口播文章（需要配置 API Key）')
     parser.add_argument('--search-web', action='store_true',
                        help='启用联网搜索：让 LLM 获取实时数据生成文章（需要 API 支持 web_search）')
+    parser.add_argument('--auto-images', action='store_true',
+                       help='AI 自动配图：根据文章内容自动搜索/生成图片并插入到文章中')
+    parser.add_argument('--image-provider', default='pollinations',
+                       choices=['pollinations', 'unsplash', 'pexels'],
+                       help='图片提供商 (默认: pollinations，免费免 key)')
+    parser.add_argument('--image-api-key', help='图片 API 密钥（Unsplash/Pexels 需要，Pollinations 不需要）')
 
     args = parser.parse_args()
 
@@ -3915,6 +4253,7 @@ AI配音音色 (--voice):
         sys.exit(0)
 
     # AI 自动生成文章
+    auto_images_done = False
     if args.auto_article:
         title = args.auto_article.strip()
         if args.project:
@@ -3937,7 +4276,7 @@ AI配音音色 (--voice):
             search_web = True
             print(f"   🧠 检测到时效性关键词，自动开启联网搜索")
 
-        success = auto_generate_article_from_title(
+        article_path = auto_generate_article_from_title(
             title,
             project_dir,
             api_key=getattr(args, 'llm_api_key', None),
@@ -3946,7 +4285,29 @@ AI配音音色 (--voice):
             provider=getattr(args, 'llm_provider', 'kimi'),
             search_web=search_web
         )
-        if success:
+        if not article_path:
+            sys.exit(1)
+
+        # 如果同时指定了 --auto-images，执行配图并继续生成视频
+        if getattr(args, 'auto_images', False):
+            args.project = str(project_dir)
+            print(f"\n{'='*60}")
+            print("🎨 第二阶段：自动配图...")
+            print(f"{'='*60}")
+            img_count = auto_generate_images_for_project(
+                project_dir,
+                image_provider=getattr(args, 'image_provider', 'pollinations'),
+                image_api_key=getattr(args, 'image_api_key', None),
+                llm_provider=getattr(args, 'llm_provider', 'kimi'),
+                llm_api_key=getattr(args, 'llm_api_key', None),
+                llm_base_url=getattr(args, 'llm_base_url', None),
+                llm_model=getattr(args, 'llm_model', None)
+            )
+            auto_images_done = True
+            if img_count == 0:
+                print("⚠️  自动配图未成功，继续生成视频（可能使用默认图片）")
+            # 继续执行，不退出（会进入 elif args.project 生成视频）
+        else:
             print(f"\n{'='*60}")
             print("🎉 第一阶段完成！")
             print(f"{'='*60}")
@@ -3958,9 +4319,7 @@ AI配音音色 (--voice):
             print(f"   3. 生成视频:")
             print(f"      python3 01_核心脚本/video_generator_pro.py -p {project_dir}")
             print(f"{'='*60}")
-        else:
-            sys.exit(1)
-        sys.exit(0)
+            sys.exit(0)
 
     # PPT导入
     if args.import_ppt:
@@ -4170,6 +4529,20 @@ AI配音音色 (--voice):
 
         # 加载项目配置（命令行参数优先级 > 配置文件）
         merge_project_config(args, project_dir)
+
+        # 自动配图（如果指定且未在 --auto-article 中执行过）
+        if getattr(args, 'auto_images', False) and not auto_images_done:
+            img_count = auto_generate_images_for_project(
+                project_dir,
+                image_provider=getattr(args, 'image_provider', 'pollinations'),
+                image_api_key=getattr(args, 'image_api_key', None),
+                llm_provider=getattr(args, 'llm_provider', 'kimi'),
+                llm_api_key=getattr(args, 'llm_api_key', None),
+                llm_base_url=getattr(args, 'llm_base_url', None),
+                llm_model=getattr(args, 'llm_model', None)
+            )
+            if img_count == 0:
+                print("⚠️  自动配图未成功，继续生成视频（可能使用默认图片）")
 
         # 素材检查
         if args.check:
