@@ -18,7 +18,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from presets import get_preset, list_presets, resolve_voice
+from presets import get_preset, list_presets, resolve_voice, flip_resolution, get_orientation
 from polish import polish, save_script, PROVIDERS
 from tts import check_edge_tts, generate_audio, merge_audio, get_segment_timings
 from composer import check_ffmpeg, compose, collect_materials
@@ -38,6 +38,8 @@ def cmd_init(args):
     # 创建目录结构
     project_dir.mkdir(parents=True)
     (project_dir / 'materials').mkdir()
+    (project_dir / 'materials-portrait').mkdir()
+    (project_dir / 'materials-landscape').mkdir()
     (project_dir / 'audio').mkdir()
     (project_dir / 'output').mkdir()
 
@@ -45,13 +47,23 @@ def cmd_init(args):
     sample_script = preset.get('sample_script', '# 示例口播稿\n\n@全局:女声\n\n开始编写你的口播稿。\n')
     (project_dir / 'script.md').write_text(sample_script, encoding='utf-8')
 
+    primary_orientation = get_orientation(preset['resolution'])
+    alt_resolution = flip_resolution(preset['resolution'])
+    alt_orientation = get_orientation(alt_resolution)
+
     # 写入配置文件
     config = {
         'style': style,
+        # 主方向（风格默认）
+        'primary_orientation': primary_orientation,
         'resolution': preset['resolution'],
+        # 副方向（翻转）
+        'alt_resolution': alt_resolution,
+        # 通用参数
         'fps': preset['fps'],
         'voice': preset['voice'],
         'rate': preset['rate'],
+        # 主方向字幕
         'subtitle_font_size': preset['subtitle_font_size'],
         'subtitle_color': preset['subtitle_color'],
         'subtitle_position': preset['subtitle_position'],
@@ -61,28 +73,30 @@ def cmd_init(args):
     with open(project_dir / 'config.json', 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-    w, h = preset['resolution'].split('x')
-    orientation = '竖屏' if int(h) > int(w) else '横屏'
-
     print(f"""
 {'='*60}
 ✅ 项目已创建: {project_dir}
 {'='*60}
 风格:     {style}
-方向:     {orientation} ({preset['resolution']})
+主方向:   {primary_orientation} ({preset['resolution']})
+副方向:   {alt_orientation} ({alt_resolution})
 配音:     {preset['voice']} ({preset['rate']})
 
 📁 目录结构:
-  script.md     ← 口播稿（已生成示例，请修改）
-  materials/    ← 放入你的照片/视频素材
-  audio/        ← AI 配音（自动生成）
-  output/       ← 最终视频（自动生成）
-  config.json   ← 项目配置
+  script.md               ← 口播稿（已生成示例，请修改）
+  materials/              ← 通用素材（横竖屏都用）
+  materials-portrait/     ← 竖屏专用素材
+  materials-landscape/    ← 横屏专用素材
+  audio/                  ← AI 配音（自动生成）
+  output/                 ← 最终视频（自动生成）
+  config.json             ← 项目配置
 
 📋 下一步:
   1. 编辑 script.md 修改口播稿（或用 polish 命令让AI润色）
-  2. 把你的照片/视频放入 materials/
-  3. 运行: python3 main.py gen {name}
+  2. 把你的照片/视频放入 materials/（或按横竖屏分开放）
+  3. 生成视频:
+     python3 main.py gen {name}              # 只生成主方向
+     python3 main.py gen {name} --dual       # 横竖屏都生成
 {'='*60}
 """)
 
@@ -137,6 +151,80 @@ def cmd_polish(args):
         print(f"\n💡 使用 --output 项目名 可直接保存到项目目录")
 
 
+def _get_materials_dir(project_dir: Path, orientation: str) -> Path:
+    """获取指定方向的素材目录。
+
+    优先使用 materials-{orientation}/，为空则回退到 materials/。
+    """
+    specific = project_dir / f'materials-{orientation}'
+    if specific.exists():
+        files = collect_materials(specific)
+        if files:
+            return specific
+    return project_dir / 'materials'
+
+
+def _clean_script_for_subtitle(script: str) -> str:
+    """提取口播稿纯文本，去除 @标记，用于字幕"""
+    import re
+    lines = script.split('\n')
+    lines = [l for l in lines
+             if not l.startswith('#') and not l.startswith('@全局:') and not l.startswith('@默认图:')]
+    text = '\n'.join(lines)
+    return re.sub(r'@\S+[:：]\s*', '', text)
+
+
+def _compose_one(project_dir: Path, merged_audio: Path, script: str,
+                 resolution: str, config: dict, label: str) -> bool:
+    """合成一个方向的视频。返回 True/False。"""
+    w, h = resolution.split('x')
+    width, height = int(w), int(h)
+    orientation = get_orientation(resolution)
+
+    # 选择素材目录
+    materials_dir = _get_materials_dir(project_dir, orientation)
+    materials = collect_materials(materials_dir)
+    if not materials:
+        print(f"  [{label}] ⚠️  没有素材，跳过")
+        return False
+
+    # 字幕字号按短边比例缩放
+    base_font_size = config.get('subtitle_font_size', 52)
+    w_base, h_base = config.get('resolution', '1080x1920').split('x')
+    base_short = min(int(w_base), int(h_base))
+    short_side = min(width, height)
+    font_size = max(int(base_font_size * short_side / base_short), 28)
+    position = config.get('subtitle_position', 'bottom')
+
+    fps = config.get('fps', 30)
+    color = config.get('subtitle_color', 'white')
+    box = config.get('subtitle_box', True)
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    suffix = 'portrait' if orientation == 'portrait' else 'landscape'
+    output_path = project_dir / 'output' / f'{project_dir.name}_{suffix}_{timestamp}.mp4'
+
+    clean_script = _clean_script_for_subtitle(script)
+    print(f"  [{label}] {orientation} {resolution} | 素材: {len(materials)} 个 | 字号: {font_size}")
+
+    success = compose(
+        materials_dir=materials_dir,
+        audio_path=merged_audio,
+        output_path=output_path,
+        script=clean_script,
+        width=width, height=height, fps=fps,
+        font_size=font_size, color=color, box=box, position=position,
+    )
+
+    if success:
+        size_mb = output_path.stat().st_size / 1024 / 1024
+        print(f"  [{label}] ✅ {output_path.name} ({size_mb:.1f} MB)")
+        return True
+    else:
+        print(f"  [{label}] ❌ 合成失败")
+        return False
+
+
 def cmd_gen(args):
     """生成视频：口播稿 + 素材 → AI配音 → 视频"""
     project_dir = Path(args.project).resolve()
@@ -160,13 +248,6 @@ def cmd_gen(args):
         sys.exit(1)
     script = script_path.read_text(encoding='utf-8')
 
-    # 检查素材
-    materials_dir = project_dir / 'materials'
-    materials = collect_materials(materials_dir)
-    if not materials:
-        print("[ERROR] materials/ 目录为空，请先放入照片或视频")
-        sys.exit(1)
-
     # 检查依赖
     if not check_edge_tts():
         print("[ERROR] edge_tts 未安装。运行: pip install edge_tts")
@@ -176,29 +257,52 @@ def cmd_gen(args):
         sys.exit(1)
 
     # 解析参数
-    resolution = config.get('resolution', '1080x1920')
-    w, h = resolution.split('x')
-    width, height = int(w), int(h)
     voice = args.voice or config.get('voice', 'zh-CN-YunyangNeural')
     rate = args.rate or config.get('rate', '+15%')
-    fps = config.get('fps', 30)
-    font_size = config.get('subtitle_font_size', 52)
-    color = config.get('subtitle_color', 'white')
-    box = config.get('subtitle_box', True)
-    position = config.get('subtitle_position', 'bottom')
 
-    orientation = '竖屏' if height > width else '横屏'
+    # 确定要生成的方向
+    if args.dual:
+        primary_res = config.get('resolution', '1080x1920')
+        alt_res = config.get('alt_resolution', flip_resolution(primary_res))
+        targets = [
+            (primary_res, '主方向'),
+            (alt_res, '副方向'),
+        ]
+    elif args.portrait:
+        primary_res = config.get('resolution', '1080x1920')
+        # 确保是竖屏
+        w, h = primary_res.split('x')
+        targets = [('1080x1920' if int(w) > int(h) else primary_res, '竖屏')]
+    elif args.landscape:
+        primary_res = config.get('resolution', '1080x1920')
+        w, h = primary_res.split('x')
+        targets = [('1920x1080' if int(h) > int(w) else primary_res, '横屏')]
+    else:
+        targets = [(config.get('resolution', '1080x1920'), '默认')]
+
+    # 检查是否有任何可用素材
+    has_any = False
+    for res, label in targets:
+        orient = get_orientation(res)
+        md = _get_materials_dir(project_dir, orient)
+        if collect_materials(md):
+            has_any = True
+            break
+    if not has_any:
+        print("[ERROR] 没有找到任何素材。请放入照片/视频到 materials/ 或 materials-portrait/ 或 materials-landscape/")
+        sys.exit(1)
+
     print(f"""
 {'='*60}
 🎬 开始生成视频
 {'='*60}
 项目:     {project_dir.name}
-方向:     {orientation} ({resolution})
+模式:     {'横竖双版本' if args.dual else ('仅竖屏' if args.portrait else ('仅横屏' if args.landscape else '默认方向'))}
 音色:     {voice} ({rate})
-素材:     {len(materials)} 个文件
+{'='*60}
 """)
 
-    # 第一步：生成配音
+    # 第一步：生成配音（只生成一次，横竖屏共用）
     print("🎙️  生成 AI 配音...")
     import asyncio
     audio_dir = project_dir / 'audio'
@@ -208,48 +312,31 @@ def cmd_gen(args):
         print("[ERROR] 配音生成失败")
         sys.exit(1)
 
-    # 合并配音
     merged_audio = audio_dir / 'full.mp3'
     if not merge_audio(audio_paths, merged_audio):
         print("[ERROR] 配音合并失败")
         sys.exit(1)
-    print(f"  配音已合并: {merged_audio}")
+    print(f"  配音: {merged_audio.name}\n")
 
-    # 第二步：合成视频
-    print("\n🎥 合成视频...")
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_path = project_dir / 'output' / f'{project_dir.name}_{timestamp}.mp4'
+    # 第二步：合成视频（每个方向一次）
+    print("🎥 合成视频...")
+    results = []
+    for resolution, label in targets:
+        ok = _compose_one(project_dir, merged_audio, script, resolution, config, label)
+        results.append((label, ok))
 
-    # 提取纯文本（去除 @标记）用于字幕
-    script_text = script.split('\n')
-    script_text = [l for l in script_text
-                   if not l.startswith('#') and not l.startswith('@全局:') and not l.startswith('@默认图:')]
-    clean_script = '\n'.join(script_text)
-    # 移除 @音色: 标记保留文本
-    import re
-    clean_script = re.sub(r'@\S+[:：]\s*', '', clean_script)
-
-    success = compose(
-        materials_dir=materials_dir,
-        audio_path=merged_audio,
-        output_path=output_path,
-        script=clean_script,
-        width=width, height=height, fps=fps,
-        font_size=font_size, color=color, box=box, position=position,
-    )
-
-    if success:
-        print(f"""
-{'='*60}
-✅ 视频生成成功！
-{'='*60}
-  输出: {output_path}
-  大小: {output_path.stat().st_size / 1024 / 1024:.1f} MB
-{'='*60}
-""")
+    # 汇总
+    success_count = sum(1 for _, ok in results if ok)
+    print(f"\n{'='*60}")
+    if success_count == len(results):
+        print(f"✅ 全部生成成功！({success_count}/{len(results)})")
+    elif success_count > 0:
+        print(f"⚠️  部分成功 ({success_count}/{len(results)})")
     else:
-        print("\n[ERROR] 视频合成失败，请检查 ffmpeg 和素材文件")
+        print(f"❌ 全部失败")
         sys.exit(1)
+    print(f"  输出目录: {project_dir / 'output'}")
+    print(f"{'='*60}")
 
 
 def cmd_run(args):
@@ -291,12 +378,22 @@ def cmd_run(args):
     if args.media:
         media_src = Path(args.media)
         if media_src.exists():
-            materials_dir = output_dir / 'materials'
-            for f in media_src.iterdir():
-                if f.is_file() and not f.name.startswith('.'):
-                    shutil.copy(f, materials_dir / f.name)
-            print(f"  素材已复制到 materials/")
+            # 自动检测横竖屏：如果是 materials-portrait/ 或 materials-landscape/ 则按方向归类
+            for subdir_name in ['materials-portrait', 'materials-landscape', 'materials']:
+                src_sub = media_src / subdir_name
+                if src_sub.is_dir():
+                    dst_sub = output_dir / subdir_name
+                    for f in src_sub.iterdir():
+                        if f.is_file() and not f.name.startswith('.'):
+                            shutil.copy(f, dst_sub / f.name)
+                    print(f"  素材已复制到 {subdir_name}/")
 
+            # 也复制根目录文件到 materials/
+            for f in media_src.iterdir():
+                if f.is_file() and not f.name.startswith('.') and not f.name.startswith('_'):
+                    shutil.copy(f, output_dir / 'materials' / f.name)
+
+            print(f"  素材复制完成")
             # 直接跑 gen
             args.project = project_name
             cmd_gen(args)
@@ -348,6 +445,12 @@ def main():
     p_gen.add_argument('project', help='项目目录')
     p_gen.add_argument('--voice', help='覆盖默认音色')
     p_gen.add_argument('--rate', help='覆盖语速')
+    p_gen.add_argument('--dual', action='store_true',
+                       help='生成横屏+竖屏双版本')
+    p_gen.add_argument('--portrait', action='store_true',
+                       help='仅生成竖屏')
+    p_gen.add_argument('--landscape', action='store_true',
+                       help='仅生成横屏')
     p_gen.set_defaults(func=cmd_gen)
 
     # --- run ---
@@ -358,6 +461,8 @@ def main():
     p_run.add_argument('--name', '-n', help='项目名称（默认自动生成）')
     p_run.add_argument('--media', '-m', help='素材目录路径（照片/视频）')
     p_run.add_argument('--voice', help='覆盖默认音色')
+    p_run.add_argument('--dual', action='store_true',
+                       help='生成横屏+竖屏双版本')
     p_run.add_argument('--provider', default='deepseek',
                        choices=list(PROVIDERS.keys()), help='LLM 提供商')
     p_run.add_argument('--api-key', help='LLM API Key')

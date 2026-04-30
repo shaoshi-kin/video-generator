@@ -126,3 +126,15 @@ def list_presets() -> list:
 def resolve_voice(voice_name: str) -> str:
     """解析音色名称为 Edge TTS 标准名"""
     return VOICE_ALIASES.get(voice_name, voice_name)
+
+
+def flip_resolution(resolution: str) -> str:
+    """翻转分辨率：1080x1920 → 1920x1080"""
+    w, h = resolution.split('x')
+    return f'{h}x{w}'
+
+
+def get_orientation(resolution: str) -> str:
+    """返回 'portrait' 或 'landscape'"""
+    w, h = resolution.split('x')
+    return 'portrait' if int(h) > int(w) else 'landscape'
