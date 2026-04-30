@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# s2v — script-to-video 快捷命令
+# 用法: s2v init|polish|gen|run [参数...]
+# 安装: 将此目录加入 PATH，或在 ~/.zshrc 中添加 alias s2v="路径/s2v"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$SCRIPT_DIR/main.py" "$@"
